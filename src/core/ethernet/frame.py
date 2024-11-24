@@ -1,6 +1,6 @@
 import struct
 from .ether_type import EthernetType
-from common.utils import mac_addr_to_bytes
+from src.common.utils import mac_addr_to_bytes
 
 
 class EthernetFrame:
