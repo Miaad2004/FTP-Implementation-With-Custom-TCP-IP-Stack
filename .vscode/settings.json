@@ -1,0 +1,26 @@
+{
+    "python.testing.unittestArgs": [
+        "-v",
+        "-s",
+        "./tests",
+        "-p",
+        "test_*.py"
+    ],
+    "python.testing.pytestEnabled": false,
+    "python.testing.unittestEnabled": true,
+    "python.envFile": "${workspaceFolder}/.env",
+    "terminal.integrated.env.windows": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+    },
+    "terminal.integrated.env.linux": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+    },
+    "terminal.integrated.env.osx": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+    },
+    "python.analysis.extraPaths": [
+        "c:\\Users\\Miaad\\.vscode\\extensions\\continue.continue-0.6.14-win32-x64",
+        "c:\\Users\\Miaad\\.vscode\\extensions\\continue.continue-0.6.15-win32-x64",
+        "./src"
+    ]
+}
