@@ -1,506 +1,1123 @@
-from sqlalchemy.orm import sessionmaker, Session as SQLAlchemySession
-from sqlalchemy.engine import Engine
 import os
+import time
+import logging
+import shutil
+import threading
 from functools import wraps
-from typing import Callable, Optional, List
+from pathlib import Path, PurePath
+from typing import Callable, Optional, List, Union, Dict, Tuple
+from threading import Lock
+from contextlib import contextmanager
+
+from pathvalidate import is_valid_filename
+from sqlalchemy.orm import sessionmaker, scoped_session
+from sqlalchemy.engine import Engine
+
 from .file import File
 from .user import User, UserExistsError
 from .ownership import Ownership
 from .access_level import AccessLevel
 from .db_manager import Base, create_engine
 from src.common.config import config_handler
-import time
+
+logging.basicConfig(level=logging.INFO)
 
 
 class AuthenticationError(Exception):
     """Exception raised when a user is not authenticated."""
+
     pass
 
 
 class FileSystem:
-    def __init__(self,
-                 root_dir: str = None,
-                 db_path: str = None) -> None:
+    def __init__(self, root_dir: str = None, db_path: str = None) -> None:
         """
-        Initialize the FileSystem with a root directory and database path.
+        Initialize the FileSystem object.
 
-        :param root_dir: The root directory for the file system.
-        :param db_path: The path to the database.
+        :param root_dir: Root directory for the file system.
+        :param db_path: Path to the database.
         """
+        # Thread-local storage
+        self.thread_local = threading.local()
+
+        # Locks
+        self._file_ops_lock = Lock()
+        self._user_ops_lock = Lock()
+        self._user_ops_lock2 = Lock()
+
+        # Set root directory
         if not root_dir:
-            root_dir = config_handler.get("file_system_root_dir")
-    
+            root_dir = Path(config_handler.get("file_system_root_dir"))
+            if not root_dir.exists():
+                raise ValueError("Root directory does not exist")
+        self.root: Path = root_dir
+
+        # Set database path
         if not db_path:
-            db_path = config_handler.get("file_system_db_path")        
-        
-        self.root: str = root_dir
+            db_path = config_handler.get("file_system_db_path")
         self.engine: Engine = create_engine(db_path)
+
+        # Initialize database
         Base.metadata.create_all(self.engine)
-        Session = sessionmaker(bind=self.engine)
-        self.session: SQLAlchemySession = Session()
-        self.current_user: Optional[User] = None
-        self.current_ftp_dir = None
+        session_factory = sessionmaker(bind=self.engine)
+        self.Session = scoped_session(session_factory)
+
+        # Logger
+        self.logger = logging.getLogger(__name__)
+
+    def get_current_user(self, db_session):
+        """
+        Get the current user from the database session.
+
+        :param db_session: Database session.
+        :return: Current user object or None.
+        """
+        if not self.current_user_id:
+            return None
+
+        return (db_session.query(User)
+                .filter_by(id=self.current_user_id)
+                .first())
+
+    @property
+    def current_ftp_dir(self) -> Optional[PurePath]:
+        """
+        Get the current FTP directory.
+
+        :return: Current FTP directory.
+        """
+        with self._user_ops_lock:
+            return getattr(self.thread_local, "current_ftp_dir", None)
+
+    @current_ftp_dir.setter
+    def current_ftp_dir(self, value: Optional[PurePath]):
+        """
+        Set the current FTP directory.
+
+        :param value: New FTP directory.
+        """
+        with self._user_ops_lock:
+            self.thread_local.current_ftp_dir = value
+
+    @property
+    def current_user_id(self) -> Optional[int]:
+        """
+        Get the current user ID.
+
+        :return: Current user ID.
+        """
+        with self._user_ops_lock:
+            return getattr(self.thread_local, "current_user_id", None)
+
+    @current_user_id.setter
+    def current_user_id(self, value: Optional[int]):
+        """
+        Set the current user ID.
+
+        :param value: New user ID.
+        """
+        with self._user_ops_lock:
+            self.thread_local.current_user_id = value
+
+    @property
+    def current_username(self) -> Optional[str]:
+        """
+        Get the current username.
+
+        :return: Current username.
+        """
+        with self._user_ops_lock:
+            return getattr(self.thread_local, "current_username", None)
+
+    @current_username.setter
+    def current_username(self, value: Optional[str]):
+        """
+        Set the current username.
+
+        :param value: New username.
+        """
+        with self._user_ops_lock:
+            self.thread_local.current_username = value
+
+    @contextmanager
+    def get_db_session(self):
+        """
+        Context manager for database session.
+
+        :yield: Database session.
+        """
+        session = self.Session()
+
+        try:
+            yield session
+            session.commit()
+
+        except Exception:
+            session.rollback()
+            raise
+
+        finally:
+            session.close()
+            self.Session.remove()
+
+    @contextmanager
+    def _atomic_file_operation(self):
+        """
+        Context manager for atomic file operations.
+
+        :yield: None.
+        """
+        acquired = False
+
+        try:
+            self._file_ops_lock.acquire()
+            acquired = True
+            yield
+
+        finally:
+            if acquired:
+                self._file_ops_lock.release()
 
     def login_required(f: Callable) -> Callable:
         """
-        Decorator to ensure the user is logged in before accessing the method.
+        Decorator to ensure the user is logged in.
 
-        :param f: The function to wrap.
-        :return: The wrapped function.
+        :param f: Function to wrap.
+        :return: Wrapped function.
         """
 
         @wraps(f)
         def wrapper(self, *args, **kwargs):
-            if not hasattr(self, "current_user") or not self.current_user:
+            if not hasattr(self, "current_username") or\
+                        not self.current_username:
                 raise AuthenticationError("User not logged in")
             return f(self, *args, **kwargs)
 
         return wrapper
 
-    def require_create_permission(f: Callable) -> Callable:
+    def resolve_path(path_param: str):
         """
-        Decorator to ensure the user has create permissions before
-        accessing the method.
+        Decorator to resolve FTP paths to filesystem paths.
 
-        :param f: The function to wrap.
-        :return: The wrapped function.
+        :param path_param: Parameter name for the path.
+        :return: Wrapped function.
         """
 
-        @wraps(f)
-        def wrapper(self, *args, **kwargs):
-            if not self.current_user.can_create:
-                raise PermissionError("User doesn't have creation privileges")
-            return f(self, *args, **kwargs)
+        def decorator(f: Callable) -> Callable:
+            @wraps(f)
+            def wrapper(self, *args, **kwargs) -> Union[str, PurePath]:
+                path = None
 
-        return wrapper
+                if path_param in kwargs:
+                    path = kwargs[path_param]
 
-    def auth_create_user(self,
-                         username: str,
-                         password: str,
-                         can_create: bool) -> User:
+                elif args:
+                    import inspect
+
+                    params = inspect.signature(f).parameters
+
+                    if path_param in params:
+                        param_position = list(params.keys()).index(
+                            path_param) - 1
+                        path = args[param_position]
+
+                if path is None:
+                    path = self.current_ftp_dir
+
+                if path:
+                    path = PurePath(path)
+
+                # Handle relative paths
+                if not path.is_absolute():
+                    if not self.current_ftp_dir:
+                        raise ValueError(
+                            "No current directory set for\
+                            relative path"
+                        )
+
+                    path = PurePath(self.current_ftp_dir) / path
+
+                # Update args
+                if path_param in kwargs:
+                    kwargs[path_param] = path
+
+                elif args:
+                    args = list(args)
+                    args[param_position] = path
+
+                return f(self, *args, **kwargs)
+
+            return wrapper
+
+        return decorator
+
+    def auth_create_user(
+        self, username: str, password: str, can_create: bool
+    ) -> User:
         """
         Create a new user.
 
-        :param username: The username of the new user.
-        :param password: The password of the new user.
-        :param can_create: Whether the user has create permissions.
-        :return: The created user.
-        :raises UserExistsError: If the user already exists.
+        :param username: Username.
+        :param password: Password.
+        :param can_create: Whether the user can create files.
+        :return: Created user object.
         """
-        if self.auth_get_user(username):
-            raise UserExistsError(f"User {username} already exists")
+        with self._user_ops_lock:
+            with self.get_db_session() as session:
+                if self.auth_get_username(username):
+                    raise UserExistsError(f"User {username} already exists")
 
-        user = User(username=username,
+                user = User(
+                    username=username,
                     password=User._hash_password(password),
-                    can_create=can_create)
+                    can_create=can_create,
+                )
 
-        try:
-            os.makedirs(os.path.join(self.root, username))
-            self.session.add(user)
-            self.session.commit()
-            return user
+                try:
+                    with self._atomic_file_operation():
+                        os.makedirs(os.path.join(self.root, username))
+                    session.add(user)
+                    return user
 
-        except Exception:
-            self.session.rollback()
-            raise
+                except Exception:
+                    raise
 
     @login_required
     def auth_delete_user(self) -> None:
         """
-        Delete the current user and all their files where they are the owner.
-
-        :raises AuthenticationError: If user not logged in
+        Delete the current user and all associated data.
         """
-        if not self.current_user:
-            raise AuthenticationError("User not logged in")
+        with self._user_ops_lock:
+            with self.get_db_session() as session:
+                if not self.current_username:
+                    raise AuthenticationError("User not logged in")
 
-        try:
-            # Delete owned files
-            owned_files = self.session.query(File)\
-                         .join(Ownership)\
-                         .join(AccessLevel)\
-                         .filter(Ownership.user_id == self.current_user.id)\
-                         .filter(AccessLevel.is_owner)\
-                         .all()
+                try:
+                    with session.begin_nested():
 
-            for file in owned_files:
-                file_path = self.fs_path_to_full_path(file.fs_path, file.name)
-                if os.path.exists(file_path):
-                    os.remove(file_path)
+                        # Delete owned files
+                        owned_files = (
+                            session.query(File)
+                            .join(Ownership)
+                            .join(AccessLevel)
+                            .filter(
+                                Ownership.user_id == self.current_user_id,
+                            )
+                            .filter(AccessLevel.is_original_creator.is_(True))
+                            .all()
+                        )
 
-                file_ownerships = self.session.query(Ownership)\
-                                              .filter_by(file_id=file.id)\
-                                              .all()
+                    for file in owned_files:
+                        file_ownerships = (
+                            session.query(Ownership)
+                            .filter_by(file_id=file.id)
+                            .all()
+                        )
 
-                for ownership in file_ownerships:
-                    self.session.delete(ownership.access_level)
-                    self.session.delete(ownership)
+                        for ownership in file_ownerships:
+                            session.delete(ownership.access_level)
+                            session.delete(ownership)
 
-                self.session.delete(file)
+                        with self._atomic_file_operation():
+                            fs_path = self.path_ftp_to_fs(file.ftp_path)
 
-            # Delete all ownerships (for shared files)
-            user_ownerships = self.session.query(Ownership)\
-                                  .filter_by(user_id=self.current_user.id)\
-                                  .all()
+                            if fs_path.exists():
+                                if fs_path.is_dir():
+                                    shutil.rmtree(fs_path, ignore_errors=True)
+                                else:
+                                    fs_path.unlink(missing_ok=True)
 
-            for ownership in user_ownerships:
-                self.session.delete(ownership.access_level)
-                self.session.delete(ownership)
+                        session.delete(file)
 
-            # Delete files on the actual FS
-            user_dir = os.path.join(self.root, self.current_user.username)
-            if os.path.exists(user_dir):
-                for root, dirs, files in os.walk(user_dir, topdown=False):
-                    try:
-                        os.rmdir(root)
-                    except OSError:
-                        pass
+                    # Delete remaining user ownerships
+                    remaining_ownerships = (
+                        session.query(Ownership)
+                        .filter_by(user_id=self.current_user_id)
+                        .all()
+                    )
 
-            # Delete the user
-            self.session.delete(self.current_user)
-            self.session.commit()
-            self.current_user = None
+                    for ownership in remaining_ownerships:
+                        session.delete(ownership.access_level)
+                        session.delete(ownership)
 
-        except Exception:
-            self.session.rollback()
-            raise
+                    # Delete user's root directory
+                    with self._atomic_file_operation():
+                        user_root = self.root / self.current_username
+                        if user_root.exists():
+                            shutil.rmtree(user_root, ignore_errors=True)
 
-    def auth_get_user(self, username: str) -> Optional[User]:
+                    # Delete the user
+                    current_user = self.get_current_user(session)
+                    session.delete(current_user)
+                    self.auth_logout()
+
+                    self.logger.info(
+                        "Successfully deleted user and \
+                        all associated data"
+                    )
+
+                except Exception as e:
+                    self.logger.error(f"Failed to delete user: {e}")
+                    raise
+
+    def auth_user_exists(self, username: str) -> bool:
+        """
+        Check if a user exists.
+
+        :param username: Username.
+        :return: True if user exists, False otherwise.
+        """
+        return self.auth_get_username(username) is not None
+
+    def auth_get_username(self, username: str) -> Optional[User]:
         """
         Get a user by username.
 
-        :param username: The username of the user.
-        :return: The user if found, otherwise None.
+        :param username: Username.
+        :return: User object or None.
         """
-        return self.session.query(User).filter_by(username=username).first()
+        with self.get_db_session() as session:
+            user = session.query(User).filter_by(username=username).first()
+            username = user.username if user else None
+            return username
 
     def auth_login(self, username: str, password: str) -> bool:
         """
         Log in a user.
 
-        :param username: The username of the user.
-        :param password: The password of the user.
-        :return: True if login is successful, otherwise False.
+        :param username: Username.
+        :param password: Password.
+        :return: True if login is successful, False otherwise.
         """
-        user = self.auth_get_user(username)
-        if user and user.authenticate(password):
-            self.current_user = user
-            self.current_ftp_dir = "/"
-            return True
+        try:
+            with self.get_db_session() as session:
+                user = session.query(User).filter_by(username=username).first()
+                if user and user.authenticate(password):
+                    self.current_user_id = user.id
+                    self.current_ftp_dir = PurePath("/")
+                    self.current_username = user.username
+                    return True
 
-        return False
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Login failed: {e}")
+            return False
 
     def auth_logout(self) -> None:
-        """Log out the current user."""
-        self.current_user = None
+        """
+        Log out the current user.
+        """
         self.current_ftp_dir = None
-
-    def path_ftp_to_fs(self, ftp_path: str) -> str:
-        """
-        """
-        ftp_path = ftp_path.replace("\\", "/").strip("/")
-        fs_path = os.path.join(self.root,
-                               self.current_user.username,
-                               ftp_path)
-        
-        fs_path = os.path.normpath(fs_path)
-        fs_path = fs_path.replace("\\", "/").strip("/")
-        
-        return fs_path
-
-    def path_fs_to_ftp(self, fs_path: str) -> str:
-        """
-        
-        """
-        assert fs_path.startswith(self.root)
-        assert self.current_user.username in fs_path
-        
-        fs_path = fs_path.replace("\\", "/").strip("/")
-        path_parts = os.path.split(fs_path)
-        path_parts = path_parts[path_parts.index(self.current_user.username):]
-        
-        ftp_path = os.path.normpath(os.path.join(*path_parts))
-        ftp_path = ftp_path.replace("\\", "/").strip("/")
-        
-        return ftp_path
+        self.current_username = None
 
     @login_required
-    @require_create_permission
-    def create_file(self, ftp_path: str, file_name: str) -> str:
+    def auth_change_password(self, new_password: str) -> None:
+        """
+        Change the password of the current user.
+
+        :param new_password: New password.
+        """
+        with self._user_ops_lock:
+            with self.get_db_session() as session:
+                user = self.get_current_user(session)
+                user.password = User._hash_password(new_password)
+
+    def path_ftp_to_fs(self, ftp_path: Union[str, PurePath]) -> Path:
+        """
+        Convert an FTP path to a filesystem path.
+
+        :param ftp_path: FTP path.
+        :return: Filesystem path.
+        """
+        if not self.current_username:
+            raise AuthenticationError("No user logged in")
+
+        try:
+            ftp_path = Path(str(ftp_path)).relative_to("/")
+            # if ".." in str(ftp_path):
+            #     raise ValueError("Path cannot contain ..")
+
+            fs_path = (self.root / self.current_username / ftp_path).resolve()
+            user_root = (self.root / self.current_username).resolve()
+
+            if not fs_path.is_relative_to(user_root):
+                raise ValueError("Access denied: Path outside user directory")
+
+            return fs_path.resolve()
+
+        except Exception as e:
+            raise ValueError(f"Invalid path: {ftp_path}") from e
+
+    def path_fs_to_ftp(self, fs_path: Union[str, Path]) -> PurePath:
+        """
+        Convert a filesystem path to an FTP path.
+
+        :param fs_path: Filesystem path.
+        :return: FTP path.
+        """
+        if not self.current_user_id:
+            raise AuthenticationError("No user logged in")
+
+        try:
+            fs_path = Path(str(fs_path)).resolve()
+            user_root = (Path(self.root) / self.current_username).resolve()
+
+            if not fs_path.is_relative_to(user_root):
+                raise ValueError("Access denied: Path outside user directory")
+
+            ftp_path = PurePath(fs_path.relative_to(user_root))
+
+            return PurePath("/") / ftp_path
+
+        except Exception as e:
+            raise ValueError(f"Invalid path: {fs_path}") from e
+
+    @login_required
+    def get_permission(self, ftp_path: PurePath) -> AccessLevel:
+        """
+        Get the access level for a given FTP path.
+
+        :param ftp_path: FTP path.
+        :return: Access level.
+        """
+        if not self.current_user_id:
+            raise AuthenticationError("No user logged in")
+
+        if str(ftp_path) == str(PurePath("/")):
+            return AccessLevel(can_read=True, can_write=True, can_execute=True)
+
+        with self.get_db_session() as session:
+            file = (session.query(File)
+                    .filter_by(ftp_path=str(ftp_path))
+                    .first())
+
+            if not file:
+                raise FileNotFoundError(
+                    f"File with path '{str(ftp_path)}' not found"
+                )
+
+            ownership = (
+                session.query(Ownership)
+                .filter_by(file_id=file.id, user_id=self.current_user_id)
+                .first()
+            )
+
+            if not ownership:
+                raise PermissionError("No permission for this file")
+
+            session.refresh(ownership.access_level)
+
+            return AccessLevel(
+                can_read=ownership.access_level.can_read,
+                can_write=ownership.access_level.can_write,
+                can_execute=ownership.access_level.can_execute,
+                is_original_creator=ownership.access_level.is_original_creator,
+            )
+
+    @login_required
+    @resolve_path("ftp_path")
+    def create_file(
+        self, ftp_path: PurePath, anonymous_accesslevel: str = "---"
+    ) -> str:
         """
         Create a new file.
 
-        :param ftp_path: The FTP path where the file will be created.
-        :param file_name: The name of the file.
-        :return: The real path of the created file.
-        :raises FileExistsError: If the file already exists.
+        :param ftp_path: FTP path for the new file.
+        :param anonymous_accesslevel: Access level for anonymous users.
+        :return: Dictionary with file object and path.
         """
-        
-        fs_path = self.path_ftp_to_fs(ftp_path)
-        file = File(ftp_path=ftp_path, name=file_name)
+        if not is_valid_filename(ftp_path.name):
+            raise ValueError("Invalid filename")
 
-        try:
-            fs_path = self.path_ftp_to_fs(fs_path)
-            full_path = os.path.join(fs_path, file_name)
+        # Check permissions for the parent dir
+        if not self.get_permission(ftp_path.parent).can_write:
+            raise PermissionError("No write permission")
 
-            if os.path.exists(full_path):
-                raise FileExistsError("File already exists")
+        with self._atomic_file_operation():
+            with self.get_db_session() as session:
+                # Convert anonymous permissions to booleans
+                (
+                    ano_can_read,
+                    ano_can_write,
+                    ano_can_execute,
+                ) = self.access_level_str_to_bools(anonymous_accesslevel)
 
-            os.makedirs(os.path.dirname(full_path), exist_ok=True)
+                # Create file obj
+                file = File(ftp_path=str(ftp_path), is_dir=False)
+                fs_path = self.path_ftp_to_fs(file.ftp_path)
 
-            with open(full_path, "w") as f:
-                f.write("")
+                # Check if parent directory exists
+                if not fs_path.parent.exists():
+                    raise FileNotFoundError("Parent directory not found")
 
-            access_level = AccessLevel(can_read=True, can_write=True,
-                                       can_delete=True, is_owner=True)
-            
-            ownership = Ownership(file=file, owner=self.current_user,
-                                  access_level=access_level)
+                # Check if file already exists
+                if fs_path.exists():
+                    raise FileExistsError("File already exists")
 
-            self.session.add(file)
-            self.session.add(access_level)
-            self.session.add(ownership)
-            self.session.commit()
+                # Set up permissions
+                access_level = AccessLevel(
+                    can_read=True,
+                    can_write=True,
+                    can_execute=True,
+                    is_original_creator=True,
+                )
 
-            return full_path
+                ownership = Ownership(
+                    file=file,
+                    owner=self.get_current_user(session),
+                    access_level=access_level,
+                )
 
-        except Exception:
-            self.session.rollback()
-            raise
-    
-    @login_required
-    def has_access_to_dir(self, dir: str):
-        # To Do: improve security
-        if os.path.split(dir)[0] == self.current_user.username:
-            return True
-    
-    @login_required
-    def mkdir(self, ftp_path: str):
-        directory = File(ftp_path=ftp_path,
-                         name=os.path.split(ftp_path)[-1],
-                         is_dir=True)
+                file.set_anonymous_access(
+                    session,
+                    can_read=ano_can_read,
+                    can_write=ano_can_write,
+                    can_execute=ano_can_execute,
+                )
 
-        fs_path = self.path_ftp_to_fs(ftp_path)
-        if not self.has_access_to_dir(fs_path):
-            raise PermissionError("No permission to create directory")
+                session.add_all([file, access_level, ownership])
 
-        # check existance onfs
-        if os.path.exists(fs_path):
-            raise FileExistsError("Directory already exists")
-        
-        access_level = AccessLevel(can_read=True, can_write=True,
-                                      can_delete=True, is_owner=True)
-        
-        ownership = Ownership(file=directory, owner=self.current_user,
-                                access_level=access_level)
-        
-        
-        try:
-            os.mkdir(fs_path)
-            self.session.add(directory)
-            self.session.add(access_level)
-            self.session.add(ownership)
-            self.session.commit()
-            
-        
-        except Exception:
-            self.session.rollback()
-            raise
-    
-    @login_required
-    def change_dir(self, target_ftp_path: str):
-        target_fs_path = self.path_ftp_to_fs(target_ftp_path)
-        if not self.has_access_to_dir(target_fs_path):
-            raise PermissionError("No permission to change directory")
-        
-        self.current_ftp_dir = target_ftp_path
+                # Create empty file
+                fs_path.touch()
+
+                return {"File": file, "path": str(fs_path)}
 
     @login_required
-    def read_file(self, ftp_file_path: str, file_name: str) -> str:
-        """
-        Read a file.
-
-        :param ftp_file_path: The FTP path of the file.
-        :param file_name: The name of the file.
-        :return: The real path of the file.
-        :raises FileNotFoundError: If the file is not found.
-        :raises PermissionError: If the user does not have read permission.
-        """
-        file = self.session.query(File)\
-                   .filter_by(ftp_path=ftp_file_path, name=file_name)\
-                   .first()
-        
-        if not file:
-            raise FileNotFoundError("File not found")
-
-        ownership = self.session.query(Ownership)\
-                        .filter_by(file_id=file.id,
-                                   user_id=self.current_user.id)\
-                        .first()
-
-        if not ownership or not ownership.access_level.can_read:
-            raise PermissionError("No read permission")
-
-        return {"File": file, 
-                "sysytem_path": os.path.join(file.fs_path, file.name)}
-
-    @login_required
-    def delete_file(self, ftp_file_path: str, file_name: str) -> None:
+    @resolve_path("ftp_path")
+    def delete_file(self, ftp_path: PurePath) -> None:
         """
         Delete a file.
 
-        :param ftp_file_path: The FTP path of the file.
-        :param file_name: The name of the file.
-        :raises FileNotFoundError: If the file is not found.
-        :raises PermissionError: If the user does not have delete permission.
+        :param ftp_path: FTP path of the file to delete.
         """
-        ftp_file_path = ftp_file_path.replace("\\", "/").strip("/")
+        # Check permissions
+        if not self.get_permission(ftp_path).can_write:
+            raise PermissionError("No write permission")
 
-        file = (self.session.query(File)
-                .filter_by(ftp_path=ftp_file_path, name=file_name)
-                .first())
-
-        if not file:
-            raise FileNotFoundError("File not found")
-
-        ownership = (self.session.query(Ownership)
-                     .filter_by(file_id=file.id, user_id=self.current_user.id)
-                     .first())
-
-        if not ownership or not ownership.access_level.can_delete:
-            raise PermissionError("No delete permission")
-
-        try:
-            os.remove(self.fs_path_to_full_path(file.fs_path, file.name))
-            self.session.delete(file)
-            self.session.commit()
-
-        except Exception:
-            self.session.rollback()
-            raise
-    
-    @login_required
-    def list_dir(self, ftp_path: str) -> List[dict]:
-
-        fs_path = self.path_ftp_to_fs(ftp_path)
-
-        files = (self.session.query(File)
-                 .join(Ownership)
-                 .filter(Ownership.user_id == self.current_user.id)
-                 .filter(File.fs_path == fs_path)
-                 .all())
-        
-        file_list = []
-        
-        for file in files:
-            # Get file stats
-            full_path = self.fs_path_to_full_path(file.fs_path, file.name)
-            stats = os.stat(full_path)
-            
-            # Get permissions
-            ownership = (self.session.query(Ownership)
-                        .filter_by(file_id=file.id, user_id=self.current_user.id)
+        with self._atomic_file_operation():
+            with self.get_db_session() as session:
+                # Check if file exists
+                file = (session.query(File)
+                        .filter_by(ftp_path=str(ftp_path))
                         .first())
-            
-            # Format permissions
-            perms = "r" if ownership.access_level.can_read else "-"
-            perms += "w" if ownership.access_level.can_write else "-" 
-            perms += "x" if os.access(full_path, os.X_OK) else "-"
-            
-            # Format timestamp
-            ts = stats.st_mtime
-            date = time.strftime("%b %d %H:%M", time.localtime(ts))
 
-            # Build file info dict
-            file_info = {
-                'type': '-',  # Regular file
-                'permissions': perms * 3, # User/group/other all same
-                'owner': self.current_user.username,
-                'group': self.current_user.username,
-                'size': stats.st_size,
-                'date': date,
-                'name': file.name
-            }
-            
-            file_list.append(file_info)
-            
-        return file_list
-    
+                if not file:
+                    raise FileNotFoundError("File not found in database")
+
+                fs_path = self.path_ftp_to_fs(file.ftp_path)
+
+                if not fs_path.exists():
+                    raise FileNotFoundError("File not found on the server")
+
+                # Delete ownerships
+                for ownership in file.ownerships:
+                    session.delete(ownership.access_level)
+                    session.delete(ownership)
+
+                session.delete(file)
+
+                # Delete file
+                fs_path.unlink()
+
     @login_required
+    @resolve_path("ftp_path")
+    def read_file(self, ftp_path: PurePath) -> Dict[str, Union[File, Path]]:
+        """
+        Read a file.
+
+        :param ftp_path: FTP path of the file to read.
+        :return: Dictionary with file object and path.
+        """
+        # check permissions
+        if not self.get_permission(ftp_path).can_read:
+            raise PermissionError("No read permission")
+
+        with self.get_db_session() as session:
+            # check if file exists
+            file = (session.query(File)
+                    .filter_by(ftp_path=str(ftp_path))
+                    .first())
+
+            if not file:
+                raise FileNotFoundError("File not found in database")
+
+            fs_path = self.path_ftp_to_fs(file.ftp_path)
+
+            if not fs_path.exists():
+                raise FileNotFoundError(
+                    f"File not found on the server, path: {fs_path}"
+                )
+
+            return {"File": file, "path": fs_path}
+
+    @login_required
+    @resolve_path("ftp_path")
+    def mkdir(self, ftp_path: str, anonymous_accesslevel: str = "---") -> None:
+        """
+        Create a new directory.
+
+        :param ftp_path: FTP path for the new directory.
+        :param anonymous_accesslevel: Access level for anonymous users.
+        """
+        if not is_valid_filename(ftp_path.name):
+            raise ValueError("Invalid directory name")
+
+        # Check permissions for the parent dir
+        if not self.get_permission(ftp_path.parent).can_write:
+            raise PermissionError("No write permission")
+
+        with self._atomic_file_operation():
+            with self.get_db_session() as session:
+                # Convert anonymous permissions to booleans
+                (
+                    ano_can_read,
+                    ano_can_write,
+                    ano_can_execute,
+                ) = self.access_level_str_to_bools(anonymous_accesslevel)
+
+                folder = File(ftp_path=str(ftp_path), is_dir=True)
+                fs_path = self.path_ftp_to_fs(folder.ftp_path)
+
+                # check if parent directory exists
+                if not fs_path.parent.exists():
+                    raise FileNotFoundError("Parent directory not found")
+
+                # check if directory already exists
+                if fs_path.exists():
+                    raise FileExistsError("Directory already exists")
+
+                fs_path.mkdir()
+
+                # set up permissions
+                access_level = AccessLevel(
+                    can_read=True,
+                    can_write=True,
+                    can_execute=True,
+                    is_original_creator=True,
+                )
+
+                ownership = Ownership(
+                    file=folder,
+                    owner=self.get_current_user(session),
+                    access_level=access_level,
+                )
+
+                folder.set_anonymous_access(
+                    session,
+                    can_read=ano_can_read,
+                    can_write=ano_can_write,
+                    can_execute=ano_can_execute,
+                )
+
+                session.add_all([folder, access_level, ownership])
+
+    @login_required
+    @resolve_path("ftp_path")
+    def rmdir(self, ftp_path: str, require_empty: bool = False):
+        """
+        Remove a directory.
+
+        :param ftp_path: FTP path of the directory to remove.
+        :param require_empty: if the directory must be empty to be removed.
+        """
+        # Check permissions
+        if not self.get_permission(ftp_path).can_write:
+            raise PermissionError("No write permission")
+
+        with self._atomic_file_operation():
+            with self.get_db_session() as session:
+                # Query DB
+                folder = (
+                    session.query(File)
+                    .filter_by(ftp_path=str(ftp_path), is_dir=True)
+                    .first()
+                )
+
+                if not folder:
+                    raise FileNotFoundError("Directory not found in database")
+
+                fs_path = self.path_ftp_to_fs(folder.ftp_path)
+
+                # check if directory exists
+                if not fs_path.exists():
+                    raise FileNotFoundError("Directory not found")
+
+                # check if directory is empty
+                is_empty = len(list(fs_path.iterdir())) == 0
+
+                if require_empty and not is_empty:
+                    raise ValueError("Directory is not empty")
+
+                # delete db entry
+                session.delete(folder)
+
+                # delete directory
+                if is_empty:
+                    fs_path.rmdir()
+
+                else:
+                    shutil.rmtree(fs_path)
+
+    @login_required
+    @resolve_path("target_ftp_path")
+    def change_dir(self, target_ftp_path: PurePath):
+        """
+        Change the current directory.
+
+        :param target_ftp_path: Target FTP path to change to.
+        """
+        fs_path = self.path_ftp_to_fs(target_ftp_path)
+
+        # resolve path (convert .. to absolute path)
+        fs_path = fs_path.resolve()
+        ftp_path = self.path_fs_to_ftp(fs_path)
+
+        # check access
+        if not self.get_permission(ftp_path).can_read:
+            raise PermissionError("No read permission for this directory")
+
+        # Check if directory exists
+        if not fs_path.exists() or not fs_path.is_dir():
+            raise FileNotFoundError(f"Directory not found: {target_ftp_path}")
+
+        # Update current directory
+        self.current_ftp_dir = target_ftp_path
+        self.logger.info(f"Changed directory to {target_ftp_path}")
+
+    @login_required
+    @resolve_path("ftp_path")
+    def _list_dir(
+        self, ftp_path: PurePath, db_session: scoped_session
+    ) -> List[File]:
+        """
+        List the contents of a directory.
+
+        :param ftp_path: FTP path of the directory to list.
+        :param db_session: Database session.
+        :return: List of files in the directory.
+        """
+        # Handle root
+        if ftp_path == PurePath("/"):
+            files = (
+                db_session.query(File)
+                .join(Ownership)
+                .join(AccessLevel)
+                .filter(Ownership.user_id == self.current_user_id)
+                .filter(
+                    ~File.ftp_path.like(f"{PurePath('/')}%{PurePath('/')}%")
+                )
+                .filter(AccessLevel.can_read.is_(True))
+                .all()
+            )
+
+        else:
+            # add a slash at the end of the path
+            if not str(ftp_path).endswith(str(PurePath("/"))):
+                ftp_path: str = str(ftp_path) + str(PurePath("/"))
+
+            files = (
+                db_session.query(File)
+                .join(Ownership)
+                .join(AccessLevel)
+                .filter(Ownership.user_id == self.current_user_id)
+                .filter(File.ftp_path.startswith(ftp_path))
+                .filter(~File.ftp_path.like(f"{ftp_path}%{PurePath('/')}%"))
+                .filter(AccessLevel.can_read.is_(True))
+                .all()
+            )
+
+        return files
+
+    @login_required
+    @resolve_path("ftp_path")
+    def list_dir(self, ftp_path: str = None) -> List[dict]:
+        """
+        List the contents of a directory in a human-readable format.
+
+        :param ftp_path: FTP path of the directory to list.
+        :return: List of dictionaries containing file information.
+        """
+        with self.get_db_session() as session:
+            files = self._list_dir(ftp_path, db_session=session)
+            file_list = []
+
+            for file in files:
+                fs_path = self.path_ftp_to_fs(file.ftp_path)
+
+                if not fs_path.exists():
+                    self.logger.warning(
+                        f"File with id {file.id} is in the database but not "
+                        f"on the system, skipping"
+                    )
+                    continue
+
+                stats = os.stat(fs_path)
+
+                # Get permissions
+                ownership = (
+                    session.query(Ownership)
+                    .filter_by(file_id=file.id, user_id=self.current_user_id)
+                    .first()
+                )
+
+                perms = self.access_level_to_str(ownership.access_level)
+
+                anonymous_perms = self.access_level_to_str(
+                    file.anonymous_access
+                )
+
+                time_stamp = stats.st_mtime
+                date = time.strftime("%b %d %H:%M", time.localtime(time_stamp))
+
+                file_info = {
+                    "type": "d" if file.is_dir else "-",
+                    "permissions": perms * 2 + anonymous_perms,
+                    "owner": self.current_username,
+                    "group": self.current_username,
+                    "size": stats.st_size,
+                    "date": date,
+                    "name": fs_path.name,
+                }
+
+                file_list.append(file_info)
+
+            return file_list
+
+    @login_required
+    @resolve_path("ftp_path")
+    def mlsd_dir(self, ftp_path: str = None) -> List[str]:
+        """
+        List the contents of a directory in MLSD format.
+
+        :param ftp_path: FTP path of the directory to list.
+        :return: List of strings containing file information in MLSD format.
+        """
+
+        def format_mlsd_time(timestamp: float) -> str:
+            return time.strftime("%Y%m%d%H%M%S", time.gmtime(timestamp))
+
+        def format_mlsd_perms(access_level) -> str:
+            perms = []
+            if access_level.can_read:
+                perms.append("r")
+            if access_level.can_write:
+                perms.append("w")
+            if access_level.can_write:
+                perms.append("a")
+            if access_level.can_write:
+                perms.append("d")
+            return "".join(perms)
+
+        def format_mlsd_entry(file_obj, stats, perms) -> str:
+            facts = [
+                f"type={'dir' if file_obj.is_dir else 'file'}",
+                f"size={stats.st_size}",
+                f"modify={format_mlsd_time(stats.st_mtime)}",
+                f"perms={format_mlsd_perms(perms)}",
+            ]
+            return f"{';'.join(facts)}; {PurePath(file_obj.ftp_path).name}"
+
+        with self.get_db_session() as session:
+            files = self._list_dir(ftp_path, db_session=session)
+
+            mlsd_list = []
+            for file in files:
+                fs_path = self.path_ftp_to_fs(file.ftp_path)
+
+                if not fs_path.exists():
+                    self.logger.warning(
+                        f"File with id {file.id} is in the database but not "
+                        f"on the system, skipping"
+                    )
+                    continue
+
+                stats = os.stat(fs_path)
+                ownership = (
+                    session.query(Ownership)
+                    .filter_by(file_id=file.id, user_id=self.current_user_id)
+                    .first()
+                )
+
+                mlsd_entry = format_mlsd_entry(
+                    file, stats, ownership.access_level
+                )
+                mlsd_list.append(mlsd_entry)
+
+            return mlsd_list
+
+    @login_required
+    @resolve_path("ftp_path")
+    def rename(self, ftp_path: PurePath, new_name: str) -> None:
+        """
+        Rename a file or directory.
+
+        :param ftp_path: FTP path of the file or directory to rename.
+        :param new_name: New name for the file or directory.
+        """
+        # Check permissions
+        if not self.get_permission(ftp_path).can_write:
+            raise PermissionError("No write permission")
+
+        with self._atomic_file_operation():
+            with self.get_db_session() as session:
+                # Query DB
+                file = (session.query(File)
+                        .filter_by(ftp_path=str(ftp_path))
+                        .first())
+
+                if not file:
+                    raise FileNotFoundError("File not found in database")
+
+                fs_path = self.path_ftp_to_fs(file.ftp_path)
+
+                # Check if file exists
+                if not fs_path.exists():
+                    raise FileNotFoundError("File not found")
+
+                # Rename file
+                new_fs_path = fs_path.parent / new_name
+                new_ftp_path = ftp_path.parent / new_name
+
+                # Update path in db
+                file.ftp_path = str(new_ftp_path)
+
+                fs_path.rename(new_fs_path)
+
+    @login_required
+    @resolve_path("target_path")
     def chmod(
         self,
+        target_path: str,
         target_username: str,
-        ftp_file_path: str,
-        file_name: str,
-        can_read: bool,
-        can_write: bool,
-        can_delete: bool,
+        permissions: str,
+        public_permissions: str,
     ) -> None:
         """
-        Change the permissions of a file for a target user.
+        Change the permissions of a file or directory.
 
-        :param target_username: The username of the target user.
-        :param ftp_file_path: The FTP path of the file.
-        :param file_name: The name of the file.
-        :param can_read: Whether the target user can read the file.
-        :param can_write: Whether the target user can write to the file.
-        :param can_delete: Whether the target user can delete the file.
-        :raises FileNotFoundError: If the file is not found.
-        :raises PermissionError: If the current user does not have permission.
-        :raises ValueError: If the target user is not found.
+        :param target_path: FTP path of the file or directory.
+        :param target_username: Username of the target user.
+        :param permissions: Permissions for the target user.
+        :param public_permissions: Permissions for anonymous users.
         """
-        ftp_file_path = ftp_file_path.replace("\\", "/").strip("/")
-        fs_path = os.path.normpath(
-            os.path.join(self.current_user.username, ftp_file_path)
-        ).replace("\\", "/")
+        # check permissions
+        if not self.get_permission(target_path).is_original_creator:
+            raise PermissionError("No write permission")
 
-        file = (self.session.query(File)
-                .filter_by(fs_path=fs_path, name=file_name)
-                .first())
+        with self.get_db_session() as session:
+            can_read, can_write, can_execute = self.access_level_str_to_bools(
+                permissions
+            )
 
-        if not file:
-            raise FileNotFoundError("File not found")
+            # get target user
+            target_user = (
+                session.query(User).filter_by(username=target_username).first()
+            )
 
-        current_ownership = (self.session.query(Ownership)
-                             .filter_by(file_id=file.id,
-                                        user_id=self.current_user.id)
-                             .first())
+            if not target_user:
+                raise ValueError("Target user not found")
 
-        if not current_ownership or\
-           not current_ownership.access_level.is_owner:
-            raise PermissionError("No permission to change permissions")
+            # get file
+            file = (session.query(File)
+                    .filter_by(ftp_path=str(target_path))
+                    .first())
 
-        target_user = self.auth_get_user(target_username)
-        if not target_user:
-            raise ValueError("Target user not found")
+            if not file:
+                raise FileNotFoundError("File not found")
 
-        try:
-            existing_ownership = (self.session.query(Ownership)
-                                  .filter_by(file_id=file.id,
-                                             user_id=target_user.id)
-                                  .first())
+            # get ownership
+            current_ownership = (
+                session.query(Ownership)
+                .filter_by(file_id=file.id, user_id=target_user.id)
+                .first()
+            )
 
-            if existing_ownership:
-                access_level = existing_ownership.access_level
-                access_level.can_read = can_read
-                access_level.can_write = can_write
-                access_level.can_delete = can_delete
-                self.session.add(access_level)
-            
+            if not current_ownership:
+                # create a new ownership
+                access_level = AccessLevel(
+                    can_read=can_read,
+                    can_write=can_write,
+                    can_execute=can_execute
+                )
+                ownership = Ownership(
+                    file=file,
+                    owner=target_user,
+                    access_level=access_level
+                )
+
+                session.add_all([access_level, ownership])
+
             else:
-                access_level = AccessLevel(can_read=can_read,
-                                           can_write=can_write,
-                                           can_delete=can_delete,
-                                           is_owner=False,)
-                ownership = Ownership(file=file,
-                                      owner=target_user,
-                                      access_level=access_level)
-        
-                self.session.add(access_level)
-                self.session.add(ownership)
+                # update the existing one
+                current_ownership.access_level.can_read = can_read
+                current_ownership.access_level.can_write = can_write
+                current_ownership.access_level.can_execute = can_execute
 
-            self.session.commit()
+                session.add(current_ownership.access_level)
 
-        except Exception:
-            self.session.rollback()
-            raise
+            # update public permissions
+            (
+                public_can_read,
+                public_can_write,
+                public_can_execute,
+            ) = self.access_level_str_to_bools(public_permissions)
+
+            file.update_anonymous_access(
+                session,
+                can_read=public_can_read,
+                can_write=public_can_write,
+                can_execute=public_can_execute,
+            )
+
+    @staticmethod
+    def access_level_to_str(access_level: AccessLevel) -> str:
+        """
+        Convert an AccessLevel object to a string representation.
+
+        :param access_level: AccessLevel object.
+        :return: String representation of the access level.
+        """
+        perms = "r" if access_level.can_read else "-"
+        perms += "w" if access_level.can_write else "-"
+        perms += "x" if access_level.can_execute else "-"
+
+        return perms
+
+    @staticmethod
+    def access_level_str_to_bools(
+        access_level_str: str
+    ) -> Tuple[bool, bool, bool]:
+        """
+        Convert a string representation of access levels to booleans.
+
+        :param access_level_str: String representation of access levels.
+        :return: Tuple of booleans representing read, write, and execute
+                 permissions.
+        """
+        assert (
+            len(access_level_str) == 3
+        ), "Access level string must be 3 characters long"
+
+        return (
+            access_level_str[0] == "r",
+            access_level_str[1] == "w",
+            access_level_str[2] == "x",
+        )
+
+    def __enter__(self):
+        """
+        Enter the runtime context related to this object.
+        """
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """
+        Exit the runtime context related to this object.
+
+        :param exc_type: Exception type.
+        :param exc_val: Exception value.
+        :param exc_tb: Traceback object.
+        """
+        self.Session.remove()
+        self.engine.dispose()
