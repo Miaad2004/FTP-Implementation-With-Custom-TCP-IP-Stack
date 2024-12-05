@@ -13,4 +13,4 @@ class Ownership(Base):
 
     file = relationship("File", back_populates="ownerships")
     owner = relationship("User", back_populates="ownerships")
-    access_level = relationship("AccessLevel", back_populates="ownerships")
+    access_level = relationship("AccessLevel", back_populates="ownership")
