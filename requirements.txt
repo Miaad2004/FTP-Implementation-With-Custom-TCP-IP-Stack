@@ -1,0 +1,6 @@
+click==8.0.1
+filelock==3.16.1
+pathvalidate==3.2.1
+SQLAlchemy==1.4.22
+pyfiglet==0.8.post1
+colorama==0.4.6
