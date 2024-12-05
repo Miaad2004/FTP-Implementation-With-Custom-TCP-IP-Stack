@@ -9,6 +9,7 @@ class AccessLevel(Base):
     id = Column(Integer, primary_key=True)
     can_read = Column(Boolean, default=False)
     can_write = Column(Boolean, default=False)
-    can_delete = Column(Boolean, default=False)
-    is_owner = Column(Boolean, default=False)
-    ownerships = relationship("Ownership", back_populates="access_level")
+    can_execute = Column(Boolean, default=False)
+    is_original_creator = Column(Boolean, nullable=False, default=False)
+
+    ownership = relationship("Ownership", back_populates="access_level")
