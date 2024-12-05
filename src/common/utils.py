@@ -1,3 +1,5 @@
+
+
 def mac_addr_to_bytes(mac_addr: str) -> bytes:
     """
     Convert a MAC address string to bytes.
