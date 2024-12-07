@@ -168,3 +168,23 @@ class FTPClient:
         """PASS command - send password"""
         response = self.send_command(f"PASS {password}")
         return response.startswith('230')
+    
+    def rein(self) -> bool:
+        """REIN command - reinitialize connection"""
+        response = self.send_command("REIN")
+        return response.startswith('220')
+
+    def noop(self) -> bool:
+        """NOOP command - no operation"""
+        response = self.send_command("NOOP")
+        return response.startswith('200')
+
+    def help(self, command: str = "") -> str:
+        """HELP command - show available commands"""
+        response = self.send_command(f"HELP {command}".strip())
+        return response
+
+    def feat(self) -> str:
+        """FEAT command - list supported features"""
+        response = self.send_command("FEAT")
+        return response
