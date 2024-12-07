@@ -383,3 +383,13 @@ class FTPClient:
         """OPTS command - set options"""
         response = self.send_command(f"OPTS {option}")
         return response.startswith('200')
+    
+    def syst(self) -> str:
+        """SYST command - get system type"""
+        response = self.send_command("SYST")
+        return response
+
+    def site_chmod(self, mode: str, filename: str) -> bool:
+        """SITE CHMOD command - change file permissions"""
+        response = self.send_command(f"SITE CHMOD {mode} {filename}")
+        return response.startswith('200')
