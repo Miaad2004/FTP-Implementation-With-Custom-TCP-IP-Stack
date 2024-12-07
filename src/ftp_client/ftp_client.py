@@ -119,3 +119,52 @@ class FTPClient:
         response = self.control_socket.recv(8192).decode()
         logging.info(f"Server response: {response}")
         return response
+
+    def login(self, username: str, password: str) -> bool:
+        """Handle FTP authentication"""
+        # Send USERNAME
+        response = self.send_command(f"USER {username}")
+        if not response.startswith('331'):
+            return False
+
+        # Send PASSWORD
+        response = self.send_command(f"PASS {password}")
+        return response.startswith('230')
+    
+    def quit(self) -> bool:
+        """QUIT command - terminate session"""
+        if self.data_socket:
+            print("421 File transfer in progress, please wait")
+            return False
+
+        try:
+            # Send QUIT command and get response
+            response = self.send_command('QUIT')
+            success = response.startswith('221')
+
+            # Close sockets
+            if self.data_socket:
+                self.data_socket.close()
+                self.data_socket = None
+            if self.control_socket:
+                self.control_socket.close()
+                self.control_socket = None
+
+            # Log disconnect
+            logging.info("Disconnected from FTP server")
+
+            return success
+
+        except Exception as e:
+            logging.error(f"Error during quit: {str(e)}")
+            return False
+
+    def user(self, username: str) -> bool:
+        """USER command - send username"""
+        response = self.send_command(f"USER {username}")
+        return response.startswith('331') or response.startswith('230')
+
+    def pass_(self, password: str) -> bool:
+        """PASS command - send password"""
+        response = self.send_command(f"PASS {password}")
+        return response.startswith('230')
