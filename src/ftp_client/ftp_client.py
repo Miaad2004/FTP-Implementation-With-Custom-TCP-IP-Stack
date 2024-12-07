@@ -263,3 +263,113 @@ class FTPClient:
             if data_socket:
                 data_socket.close()
             return f"LIST failed: {str(e)}"
+        
+    def download_file(self, filename: str) -> bool:
+        """RETR command implementation"""
+        data_socket = None
+        try:
+            data_socket = self.create_data_connection()
+            if not data_socket:
+                return False
+
+            response = self.send_command(f'RETR {filename}')
+            if not response.startswith('150'):
+                if data_socket:
+                    data_socket.close()
+                return False
+
+            if self.secured_data and self.ssl_context:
+                data_socket = self.ssl_context.wrap_socket(
+                    data_socket,
+                    server_hostname=self.host,
+                    session=self.control_socket.session,
+                )
+
+            data_socket.settimeout(10)
+            with open(filename, 'wb') as file:
+                try:
+                    while True:
+                        data = data_socket.recv(8192)
+                        if not data:
+                            break
+                        file.write(data)
+                except socket.timeout:
+                    logging.error(f"Timeout while downloading {filename}")
+                    return False
+
+        except Exception as e:
+            logging.error(f"Download failed for {filename}: {str(e)}")
+            return False
+        finally:
+            if data_socket:
+                try:
+                    if self.secured_data:
+                        data_socket.unwrap()
+                    data_socket.close()
+                except Exception as e:
+                    logging.error(f"Error closing data socket: {str(e)}")
+
+        return self.read_response().startswith('226')
+
+    def upload_file(self, filepath: str) -> bool:
+        """STOR command implementation for uploading files"""
+        data_socket = None
+        try:
+            if not os.path.exists(filepath):
+                logging.error(f"File not found: {filepath}")
+                return False
+
+            filename = os.path.basename(filepath)
+            data_socket = self.create_data_connection()
+            if not data_socket:
+                return False
+
+            response = self.send_command(f'STOR {filename}')
+            if not response.startswith('150'):
+                if data_socket:
+                    data_socket.close()
+                return False
+
+            if self.secured_data and self.ssl_context:
+                data_socket = self.ssl_context.wrap_socket(
+                    data_socket,
+                    server_hostname=self.host,
+                    session=self.control_socket.session,
+                )
+
+            data_socket.settimeout(10)
+            with open(filepath, 'rb') as file:
+                try:
+                    data_socket.sendall(file.read())
+                except socket.timeout:
+                    logging.error(f"Timeout while uploading {filename}")
+                    return False
+
+        except Exception as e:
+            logging.error(f"Upload failed for {filename}: {str(e)}")
+            return False
+        finally:
+            if data_socket:
+                try:
+                    if self.secured_data:
+                        data_socket.unwrap()
+                    data_socket.close()
+                except Exception as e:
+                    logging.error(f"Error closing data socket: {str(e)}")
+
+        return self.read_response().startswith('226')
+
+    def dele(self, filename: str) -> bool:
+        """DELE command - delete file"""
+        response = self.send_command(f"DELE {filename}")
+        return response.startswith('250')
+
+    def rnfr(self, filename: str) -> bool:
+        """RNFR command - rename from (specify source file)"""
+        response = self.send_command(f"RNFR {filename}")
+        return response.startswith('350')
+
+    def rnto(self, filename: str) -> bool:
+        """RNTO command - rename to (specify destination file)"""
+        response = self.send_command(f"RNTO {filename}")
+        return response.startswith('250')
