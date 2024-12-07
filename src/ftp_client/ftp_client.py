@@ -373,3 +373,13 @@ class FTPClient:
         """RNTO command - rename to (specify destination file)"""
         response = self.send_command(f"RNTO {filename}")
         return response.startswith('250')
+
+    def type(self, type_code: str) -> bool:
+        """TYPE command - set transfer type"""
+        response = self.send_command(f"TYPE {type_code}")
+        return response.startswith('200')
+
+    def opts(self, option: str) -> bool:
+        """OPTS command - set options"""
+        response = self.send_command(f"OPTS {option}")
+        return response.startswith('200')
