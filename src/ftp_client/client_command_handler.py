@@ -1,29 +1,31 @@
 from client import FTPClient
+from colorama import Fore, Style, init
 
 def main():
-    host = input("Enter FTP server address: ")
-    port = int(input("Enter port (default 21): ") or "21")
-    use_tls = input("Use TLS (y/n)? ").lower() == 'y'
+    init(autoreset=True)  # Automatically reset colors after each print
+    host = input(f"{Fore.CYAN}Enter FTP server address: {Style.RESET_ALL}")
+    port = int(input(f"{Fore.CYAN}Enter port (default 21): {Style.RESET_ALL}") or "21")
+    use_tls = input(f"{Fore.CYAN}Use TLS (y/n)? {Style.RESET_ALL}").lower() == 'y'
 
     client = FTPClient(host, port)
     if not client.connect():
-        print("Connection failed")
+        print(f"{Fore.RED}Connection failed{Style.RESET_ALL}")
         return
 
     if use_tls:
         if not client.auth_tls():
-            print("TLS initialization failed")
+            print(f"{Fore.RED}TLS initialization failed{Style.RESET_ALL}")
             return
-        print("TLS connection established")
+        print(f"{Fore.GREEN}TLS connection established{Style.RESET_ALL}")
 
-    print("Please login using USER command")
+    print(f"{Fore.CYAN}Please login using USER command{Style.RESET_ALL}")
     logged_in = False
     awaiting_rnto = False
     rnfr_filename = ""
 
     username = None
     protocol = "ftps" if use_tls else "ftp"
-    prompt = "ftps>" if use_tls else "ftp>"
+    prompt = f"{Fore.YELLOW}ftps>{Style.RESET_ALL}" if use_tls else f"{Fore.YELLOW}ftp>{Style.RESET_ALL}"
 
     while True:
         command = input(prompt).strip()
@@ -37,31 +39,31 @@ def main():
             if client.user(username):
                 if username.lower() == 'anonymous':
                     logged_in = True
-                    prompt = f"({username})({host}):{protocol}> "
-                    print("230 Anonymous login successful")
+                    prompt = f"{Fore.YELLOW}({username})({host}):{protocol}> {Style.RESET_ALL}"
+                    print(f"{Fore.GREEN}230 Anonymous login successful{Style.RESET_ALL}")
                 else:
-                    print("331 Please specify the password")
+                    print(f"{Fore.CYAN}331 Please specify the password{Style.RESET_ALL}")
             else:
-                print("530 Invalid username")
+                print(f"{Fore.RED}530 Invalid username{Style.RESET_ALL}")
 
         elif cmd == "PASS":
             if not logged_in:
                 password = argument
                 if client.pass_(password):
                     logged_in = True
-                    prompt = f"({username})({host}):{protocol}> "
-                    print("230 Login successful")
+                    prompt = f"{Fore.YELLOW}({username})({host}):{protocol}> {Style.RESET_ALL}"
+                    print(f"{Fore.GREEN}230 Login successful{Style.RESET_ALL}")
                 else:
-                    print("530 Login incorrect")
+                    print(f"{Fore.RED}530 Login incorrect{Style.RESET_ALL}")
             else:
-                print("503 Already logged in")
+                print(f"{Fore.RED}503 Already logged in{Style.RESET_ALL}")
 
         elif cmd == "QUIT":
             break
 
         # Only allow other commands if logged in
         elif not logged_in:
-            print("530 Please login with USER and PASS first")
+            print(f"{Fore.RED}530 Please login with USER and PASS first{Style.RESET_ALL}")
 
         elif cmd == "LIST":
             print(client.list_files())
@@ -70,54 +72,54 @@ def main():
         elif cmd == "RETR":
             filename = argument
             if client.download_file(filename):
-                print(f"Downloaded {filename}")
+                print(f"{Fore.GREEN}Downloaded {filename}{Style.RESET_ALL}")
             else:
-                print("Download failed")
+                print(f"{Fore.RED}Download failed{Style.RESET_ALL}")
         elif cmd == "STOR":
             filename = argument
             if client.upload_file(filename):
-                print(f"Uploaded {filename}")
+                print(f"{Fore.GREEN}Uploaded {filename}{Style.RESET_ALL}")
             else:
-                print("Upload failed")
+                print(f"{Fore.RED}Upload failed{Style.RESET_ALL}")
         elif cmd == "DELE":
             filename = argument
             if client.dele(filename):
-                print(f"Deleted {filename}")
+                print(f"{Fore.GREEN}Deleted {filename}{Style.RESET_ALL}")
             else:
-                print("Delete failed")
+                print(f"{Fore.RED}Delete failed{Style.RESET_ALL}")
         elif cmd == "MKD":
             dirname = argument
             if client.mkd(dirname):
-                print(f"Created directory {dirname}")
+                print(f"{Fore.GREEN}Created directory {dirname}{Style.RESET_ALL}")
             else:
-                print("Directory creation failed")
+                print(f"{Fore.RED}Directory creation failed{Style.RESET_ALL}")
         elif cmd == "RMD":
             dirname = argument
             if client.rmd(dirname):
-                print(f"Removed directory {dirname} ")
+                print(f"{Fore.GREEN}Removed directory {dirname} {Style.RESET_ALL}")
             else:
-                print("Directory removal failed")
+                print(f"{Fore.RED}Directory removal failed{Style.RESET_ALL}")
         elif cmd == "CWD":
             path = argument
             if client.cwd(path):
-                print(f"Changed directory to {path}")
+                print(f"{Fore.GREEN}Changed directory to {path}{Style.RESET_ALL}")
             else:
-                print("Directory change failed")
+                print(f"{Fore.RED}Directory change failed{Style.RESET_ALL}")
         elif cmd == "CDUP":
             if client.cdup():
-                print("Changed to parent directory")
+                print(f"{Fore.GREEN}Changed to parent directory{Style.RESET_ALL}")
             else:
-                print("Directory change failed")
+                print(f"{Fore.RED}Directory change failed{Style.RESET_ALL}")
         elif cmd == "REIN":
             if client.rein():
-                print("Connection reinitialized")
+                print(f"{Fore.GREEN}Connection reinitialized{Style.RESET_ALL}")
             else:
-                print("Failed to reinitialize connection")
+                print(f"{Fore.RED}Failed to reinitialize connection{Style.RESET_ALL}")
         elif cmd == "NOOP":
             if client.noop():
-                print("NOOP command successful")
+                print(f"{Fore.GREEN}NOOP command successful{Style.RESET_ALL}")
             else:
-                print("NOOP command failed")
+                print(f"{Fore.RED}NOOP command failed{Style.RESET_ALL}")
         elif cmd == "HELP":
             print(client.help(argument))
         elif cmd == "FEAT":
@@ -125,11 +127,11 @@ def main():
         elif cmd == "RNFR":
             filename = argument
             if client.rnfr(filename):
-                print("350 File exists, ready for destination name")
+                print(f"{Fore.CYAN}350 File exists, ready for destination name{Style.RESET_ALL}")
                 awaiting_rnto = True
                 rnfr_filename = filename
             else:
-                print("RNFR command failed")
+                print(f"{Fore.RED}RNFR command failed{Style.RESET_ALL}")
                 awaiting_rnto = False
                 rnfr_filename = ""
 
@@ -137,30 +139,30 @@ def main():
             if awaiting_rnto:
                 new_filename = argument
                 if client.rnto(new_filename):
-                    print(f"250 Renamed {rnfr_filename} to {new_filename}")
+                    print(f"{Fore.GREEN}250 Renamed {rnfr_filename} to {new_filename}{Style.RESET_ALL}")
                 else:
-                    print("RNTO command failed")
+                    print(f"{Fore.RED}RNTO command failed{Style.RESET_ALL}")
                 awaiting_rnto = False
                 rnfr_filename = ""
             else:
-                print("503 Need RNFR before RNTO")
-                
+                print(f"{Fore.RED}503 Need RNFR before RNTO{Style.RESET_ALL}")
+
         elif cmd == "TYPE":
             type_code = argument
             if client.type(type_code):
-                print(f"Set transfer type to {type_code}")
+                print(f"{Fore.GREEN}Set transfer type to {type_code}{Style.RESET_ALL}")
             else:
-                print("Failed to set transfer type")
+                print(f"{Fore.RED}Failed to set transfer type{Style.RESET_ALL}")
         elif cmd == "OPTS":
             option = argument
             if client.opts(option):
-                print(f"Set option {option}")
+                print(f"{Fore.GREEN}Set option {option}{Style.RESET_ALL}")
             else:
-                print("Failed to set option")
+                print(f"{Fore.RED}Failed to set option{Style.RESET_ALL}")
         elif cmd == "SYST":
             response = client.syst()
             print(response)
-            
+
         elif cmd == "SITE":
             if argument.upper().startswith("CHMOD"):
                 parts = argument.split()
@@ -168,14 +170,14 @@ def main():
                     mode = parts[1]
                     filename = parts[2]
                     if client.site_chmod(mode, filename):
-                        print(f"Changed permissions of {filename} to {mode}")
+                        print(f"{Fore.GREEN}Changed permissions of {filename} to {mode}{Style.RESET_ALL}")
                     else:
-                        print("Failed to change file permissions")
+                        print(f"{Fore.RED}Failed to change file permissions{Style.RESET_ALL}")
                 else:
-                    print("Usage: SITE CHMOD <mode> <filename>")
+                    print(f"{Fore.RED}Usage: SITE CHMOD <mode> <filename>{Style.RESET_ALL}")
             else:
-                print("Unsupported SITE command")
-                
+                print(f"{Fore.RED}Unsupported SITE command{Style.RESET_ALL}")
+
     client.quit()
 
 if __name__ == "__main__":
