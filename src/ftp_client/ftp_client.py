@@ -188,3 +188,78 @@ class FTPClient:
         """FEAT command - list supported features"""
         response = self.send_command("FEAT")
         return response
+    
+    def cwd(self, path: str) -> bool:
+        """CWD command - change working directory"""
+        response = self.send_command(f"CWD {path}")
+        return response.startswith('250')
+
+    def cdup(self) -> bool:
+        """CDUP command - change to parent directory"""
+        response = self.send_command("CDUP")
+        return response.startswith('250')
+    
+    def mkd(self, dirname: str) -> bool:
+        """MKD command - make directory"""
+        response = self.send_command(f"MKD {dirname}")
+        return response.startswith('257')
+
+    def rmd(self, dirname: str) -> bool:
+        """RMD command - remove directory"""
+        response = self.send_command(f"RMD {dirname}")
+        return response.startswith('250')
+
+    def pwd(self) -> str:
+        """PWD command - print working directory"""
+        response = self.send_command("PWD")
+        if response.startswith('257'):
+            # Extract path from response (usually in quotes)
+            import re
+            match = re.search(r'"([^"]*)"', response)
+            return match.group(1) if match else ""
+        return ""
+
+    def list_files(self) -> str:
+        """LIST command implementation"""
+        try:
+            data_socket = self.create_data_connection()
+            if not data_socket:
+                return "Failed to create data connection"
+
+            # Wrap socket with TLS BEFORE sending LIST command
+            if self.secured_data and self.ssl_context:
+                data_socket = self.ssl_context.wrap_socket(
+                    data_socket,
+                    server_hostname=self.host,
+                    session=self.control_socket.session,
+                )
+
+            response = self.send_command('LIST')
+            if not response.startswith('150'):
+                if data_socket:
+                    data_socket.close()
+                return "Failed to initiate LIST"
+
+            chunks = []
+            data_socket.settimeout(10)
+            try:
+                while True:
+                    data = data_socket.recv(8192)
+                    if not data:
+                        break
+                    chunks.append(data.decode())
+            except socket.timeout:
+                pass
+            finally:
+                if self.secured_data:
+                    data_socket.unwrap()
+                data_socket.close()
+
+            self.read_response()
+            return ''.join(chunks)
+
+        except Exception as e:
+            logging.error(f"LIST failed: {str(e)}")
+            if data_socket:
+                data_socket.close()
+            return f"LIST failed: {str(e)}"
