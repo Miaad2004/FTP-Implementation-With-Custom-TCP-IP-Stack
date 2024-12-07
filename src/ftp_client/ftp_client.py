@@ -107,3 +107,15 @@ class FTPClient:
             if data_sock:
                 data_sock.close()
             return None
+        
+    def send_command(self, command: str) -> str:
+        """Send command to server and return response"""
+        logging.info(f"Sending command: {command}")
+        self.control_socket.send(f"{command}\r\n".encode())
+        return self.read_response()
+
+    def read_response(self) -> str:
+        """Read response from server"""
+        response = self.control_socket.recv(8192).decode()
+        logging.info(f"Server response: {response}")
+        return response
