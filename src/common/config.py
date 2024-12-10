@@ -8,7 +8,7 @@ class ConfigHandler:
     A class to handle loading and validating configuration from a JSON file.
     """
 
-    config_file_path = "server_config.json"
+    config_file_path = "server_config_linux.json"
 
     def __init__(self, config_file=None):
         """
@@ -17,6 +17,8 @@ class ConfigHandler:
         :param config_file: Path to the configuration file.
                             If None, defaults to 'server_config.json'.
         """
+        self.logger = logging.getLogger(__name__)
+
         self.config = {}
         if config_file is None:
             config_file = self.config_file_path
@@ -31,19 +33,23 @@ class ConfigHandler:
         :param config_file: Path to the configuration file.
         """
         if not os.path.exists(config_file):
-            logging.error(f"Config file {config_file} does not exist.")
+            self.logger.error(f"Config file {config_file} does not exist.")
             return
 
         try:
             with open(config_file, "r") as file:
                 self.config = json.load(file)
-                logging.info(f"Config file {config_file} loaded successfully.")
+                self.logger.info(
+                    f"Config file {config_file} loaded successfully."
+                )
 
         except json.JSONDecodeError as e:
-            logging.error(f"Error parsing JSON config file {config_file}: {e}")
+            self.logger.error(
+                f"Error parsing JSON config file {config_file}: {e}"
+            )
 
         except Exception as e:
-            logging.error(f"Error loading config file {config_file}: {e}")
+            self.logger.error(f"Error loading config file {config_file}: {e}")
 
     def get(self, key, default=None):
         """
@@ -85,3 +91,6 @@ class ConfigHandler:
                     f"Config key {key} has incorrect type. "
                     f"Expected {expected_type}, got {type(self.config[key])}"
                 )
+
+
+config_handler = ConfigHandler()
