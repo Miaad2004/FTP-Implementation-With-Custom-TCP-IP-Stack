@@ -2,6 +2,7 @@ import random
 from .ip_protocol import IPProtocol
 import struct
 from src.common.utils import ip_to_bytes, ip_to_str, calculate_checksum
+from typing import Tuple
 
 
 class IPHeader:
@@ -13,7 +14,7 @@ class IPHeader:
         self,
         source_ip: str,
         dest_ip: str,
-        protocol: IPProtocol | int,
+        protocol: IPProtocol ,
         ttl: int = 128
     ):
         """
@@ -32,7 +33,7 @@ class IPHeader:
 
         self.identification: int = random.randint(0, 2**14)  # 16 bits
         self.flag_reserved: int = 0  # 1 bit
-        self.flag_dont_fragment: int = 0  # 1 bit
+        self.flag_dont_fragment: int = 1  # 1 bit
         self.flag_more_fragments: int = 0  # 1 bit
         self.fragment_offset: int = 0  # 13 bits
 
@@ -80,6 +81,7 @@ class IPHeader:
         )
 
         self.header_checksum = calculate_checksum(ip_header)
+
         ip_header = struct.pack(
             "!BBHHHBBH4s4s",
             (self.version << 4) + ihl_words,
@@ -97,13 +99,18 @@ class IPHeader:
         return ip_header
 
     @staticmethod
-    def from_bytes(ip_header_bytes: bytes) -> 'IPHeader':
+    def from_bytes(ip_header_bytes: bytes) -> Tuple['IPHeader', bool]:
         """
         Creates an IPHeader instance from raw bytes.
 
         :param ip_header_bytes: The IP header as bytes.
-        :return: An IPHeader instance.
+        :return: A tuple containing the IPHeader instance and a boolean indicating if the checksum is valid.
         """
+        if len(ip_header_bytes) < 20:
+            raise ValueError("IP header is too short.")
+        
+        is_valid = calculate_checksum(ip_header_bytes) == 0
+        
         (
             version_ihl,
             dscp_ecn,
@@ -141,4 +148,19 @@ class IPHeader:
         ip_header.ttl = ttl
         ip_header.protocol = protocol
         ip_header.header_checksum = header_checksum
-        return ip_header
+        return ip_header, is_valid
+    
+    @staticmethod
+    def get_header_length(packet: bytes) -> int:
+        """
+        Extracts the header length from the whole packet.
+
+        :param packet: The whole packet as bytes.
+        :return: The header length in bytes.
+        """
+        if len(packet) < 1:
+            raise ValueError("Packet is too short to contain an IP header.")
+        
+        version_ihl = packet[0]
+        ihl = (version_ihl & 0x0F) * 4
+        return ihl
