@@ -5,6 +5,9 @@ from .db_manager import Base
 from .access_level import AccessLevel
 from pathlib import Path
 from sqlalchemy.orm import validates
+from sqlalchemy.ext.hybrid import hybrid_property
+from sqlalchemy import exists, and_
+from .ownership import Ownership
 
 
 class File(Base):
@@ -12,6 +15,7 @@ class File(Base):
 
     id = Column(Integer, primary_key=True)
     ftp_path = Column(String, nullable=False)
+    creator_username = Column(String, nullable=False)
     is_dir = Column(Boolean, nullable=False, default=False)
     anonymous_access_level_id = Column(Integer, ForeignKey("access_levels.id"))
 
@@ -22,9 +26,11 @@ class File(Base):
     def __init__(self,
                  ftp_path: str,
                  is_dir: bool = False,
+                 creator_username: str = None,
                  anonymous_access_level: Optional['AccessLevel'] = None):
         self.ftp_path = ftp_path
         self.is_dir = is_dir
+        self.creator_username = creator_username
 
         if anonymous_access_level:
             self.anonymous_access = anonymous_access_level
@@ -60,8 +66,3 @@ class File(Base):
                 can_execute=can_execute
             )
 
-    @validates('ftp_path')
-    def validate_path(self, key, path):
-        if isinstance(path, Path):
-            return str(path)
-        return path
