@@ -10,6 +10,7 @@ from threading import Lock
 from contextlib import contextmanager
 
 from pathvalidate import is_valid_filename
+from sqlalchemy import or_, and_
 from sqlalchemy.orm import sessionmaker, scoped_session
 from sqlalchemy.engine import Engine
 
@@ -19,8 +20,6 @@ from .ownership import Ownership
 from .access_level import AccessLevel
 from .db_manager import Base, create_engine
 from src.common.config import config_handler
-
-logging.basicConfig(level=logging.INFO)
 
 
 class AuthenticationError(Exception):
@@ -55,6 +54,9 @@ class FileSystem:
         # Set database path
         if not db_path:
             db_path = config_handler.get("file_system_db_path")
+            # if not os.access(db_path, os.W_OK):
+            #     raise PermissionError(f"No write permission for database at {db_path}")
+            
         self.engine: Engine = create_engine(db_path)
 
         # Initialize database
@@ -287,78 +289,77 @@ class FileSystem:
         """
         Delete the current user and all associated data.
         """
-        with self._user_ops_lock:
-            with self.get_db_session() as session:
-                if not self.current_username:
-                    raise AuthenticationError("User not logged in")
+        with self.get_db_session() as session:
+            if not self.current_user_id:
+                raise AuthenticationError("User not logged in")
 
-                try:
-                    with session.begin_nested():
+            try:
+                with session.begin_nested():
 
-                        # Delete owned files
-                        owned_files = (
-                            session.query(File)
-                            .join(Ownership)
-                            .join(AccessLevel)
-                            .filter(
-                                Ownership.user_id == self.current_user_id,
-                            )
-                            .filter(AccessLevel.is_original_creator.is_(True))
-                            .all()
+                    # Delete owned files
+                    owned_files = (
+                        session.query(File)
+                        .join(Ownership)
+                        .join(AccessLevel)
+                        .filter(
+                            Ownership.user_id == self.current_user_id,
                         )
-
-                    for file in owned_files:
-                        file_ownerships = (
-                            session.query(Ownership)
-                            .filter_by(file_id=file.id)
-                            .all()
-                        )
-
-                        for ownership in file_ownerships:
-                            session.delete(ownership.access_level)
-                            session.delete(ownership)
-
-                        with self._atomic_file_operation():
-                            fs_path = self.path_ftp_to_fs(file.ftp_path)
-
-                            if fs_path.exists():
-                                if fs_path.is_dir():
-                                    shutil.rmtree(fs_path, ignore_errors=True)
-                                else:
-                                    fs_path.unlink(missing_ok=True)
-
-                        session.delete(file)
-
-                    # Delete remaining user ownerships
-                    remaining_ownerships = (
-                        session.query(Ownership)
-                        .filter_by(user_id=self.current_user_id)
+                        .filter(AccessLevel.is_original_creator.is_(True))
                         .all()
                     )
 
-                    for ownership in remaining_ownerships:
+                for file in owned_files:
+                    file_ownerships = (
+                        session.query(Ownership)
+                        .filter_by(file_id=file.id)
+                        .all()
+                    )
+
+                    for ownership in file_ownerships:
                         session.delete(ownership.access_level)
                         session.delete(ownership)
 
-                    # Delete user's root directory
                     with self._atomic_file_operation():
-                        user_root = self.root / self.current_username
-                        if user_root.exists():
-                            shutil.rmtree(user_root, ignore_errors=True)
+                        fs_path = self.path_ftp_to_fs(file.ftp_path)
 
-                    # Delete the user
-                    current_user = self.get_current_user(session)
-                    session.delete(current_user)
-                    self.auth_logout()
+                        if fs_path.exists():
+                            if fs_path.is_dir():
+                                shutil.rmtree(fs_path, ignore_errors=True)
+                            else:
+                                fs_path.unlink(missing_ok=True)
 
-                    self.logger.info(
-                        "Successfully deleted user and \
-                        all associated data"
-                    )
+                    session.delete(file)
 
-                except Exception as e:
-                    self.logger.error(f"Failed to delete user: {e}")
-                    raise
+                # Delete remaining user ownerships
+                remaining_ownerships = (
+                    session.query(Ownership)
+                    .filter_by(user_id=self.current_user_id)
+                    .all()
+                )
+
+                for ownership in remaining_ownerships:
+                    session.delete(ownership.access_level)
+                    session.delete(ownership)
+
+                # Delete user's root directory
+                with self._atomic_file_operation():
+                    user_root = self.root / self.current_username
+                    if user_root.exists():
+                        shutil.rmtree(user_root, ignore_errors=True)
+
+                # Delete the user
+                current_user = self.get_current_user(session)
+                session.delete(current_user)
+                self.auth_logout()
+
+                self.logger.info(
+                    "Successfully deleted user and \
+                    all associated data"
+                )
+
+            except Exception as e:
+                self.logger.error(f"Failed to delete user: {e}")
+                raise
 
     def auth_user_exists(self, username: str) -> bool:
         """
@@ -423,48 +424,60 @@ class FileSystem:
                 user = self.get_current_user(session)
                 user.password = User._hash_password(new_password)
 
-    def path_ftp_to_fs(self, ftp_path: Union[str, PurePath]) -> Path:
+    def path_ftp_to_fs(self, ftp_path: Union[str, PurePath], creator_username: str = None) -> Path:
         """
         Convert an FTP path to a filesystem path.
 
         :param ftp_path: FTP path.
         :return: Filesystem path.
         """
-        if not self.current_username:
+        if not self.current_username and not creator_username:
             raise AuthenticationError("No user logged in")
 
+        if creator_username:
+            username = creator_username
+        
+        else:
+            username = self.current_username
+        
         try:
             ftp_path = Path(str(ftp_path)).relative_to("/")
             # if ".." in str(ftp_path):
             #     raise ValueError("Path cannot contain ..")
 
-            fs_path = (self.root / self.current_username / ftp_path).resolve()
-            user_root = (self.root / self.current_username).resolve()
+            fs_path = (self.root / username / ftp_path).resolve()
+            # user_root = (self.root / self.current_username).resolve()
 
-            if not fs_path.is_relative_to(user_root):
-                raise ValueError("Access denied: Path outside user directory")
+            # if not fs_path.is_relative_to(user_root):
+            #     raise ValueError("Access denied: Path outside user directory")
 
             return fs_path.resolve()
 
         except Exception as e:
             raise ValueError(f"Invalid path: {ftp_path}") from e
 
-    def path_fs_to_ftp(self, fs_path: Union[str, Path]) -> PurePath:
+    def path_fs_to_ftp(self, fs_path: Union[str, Path], creator_username=None) -> PurePath:
         """
         Convert a filesystem path to an FTP path.
 
         :param fs_path: Filesystem path.
         :return: FTP path.
         """
-        if not self.current_user_id:
+        if not self.current_username and not creator_username:
             raise AuthenticationError("No user logged in")
+
+        if creator_username:
+            username = creator_username
+        
+        else:
+            username = self.current_username
 
         try:
             fs_path = Path(str(fs_path)).resolve()
-            user_root = (Path(self.root) / self.current_username).resolve()
+            user_root = (Path(self.root) / username).resolve()
 
-            if not fs_path.is_relative_to(user_root):
-                raise ValueError("Access denied: Path outside user directory")
+            # if not fs_path.is_relative_to(user_root):
+            #     raise ValueError("Access denied: Path outside user directory")
 
             ftp_path = PurePath(fs_path.relative_to(user_root))
 
@@ -488,9 +501,22 @@ class FileSystem:
             return AccessLevel(can_read=True, can_write=True, can_execute=True)
 
         with self.get_db_session() as session:
+            # First, try to find a file owned by the current user
             file = (session.query(File)
-                    .filter_by(ftp_path=str(ftp_path))
+                    .join(Ownership)
+                    .join(AccessLevel)
+                    .filter(Ownership.user_id == self.current_user_id)
+                    .filter(File.ftp_path == str(ftp_path))
+                    .filter(AccessLevel.is_original_creator.is_(True))
                     .first())
+
+            # If no file is found, try to find a shared file
+            if not file:
+                file = (session.query(File)
+                        .join(Ownership)
+                        .join(AccessLevel)
+                        .filter(File.ftp_path == str(ftp_path))
+                        .first())
 
             if not file:
                 raise FileNotFoundError(
@@ -544,7 +570,7 @@ class FileSystem:
                 ) = self.access_level_str_to_bools(anonymous_accesslevel)
 
                 # Create file obj
-                file = File(ftp_path=str(ftp_path), is_dir=False)
+                file = File(ftp_path=str(ftp_path), is_dir=False, creator_username=self.current_username)
                 fs_path = self.path_ftp_to_fs(file.ftp_path)
 
                 # Check if parent directory exists
@@ -605,7 +631,7 @@ class FileSystem:
                 if not file:
                     raise FileNotFoundError("File not found in database")
 
-                fs_path = self.path_ftp_to_fs(file.ftp_path)
+                fs_path = self.path_ftp_to_fs(file.ftp_path, creator_username=file.creator_username)
 
                 if not fs_path.exists():
                     raise FileNotFoundError("File not found on the server")
@@ -642,7 +668,7 @@ class FileSystem:
             if not file:
                 raise FileNotFoundError("File not found in database")
 
-            fs_path = self.path_ftp_to_fs(file.ftp_path)
+            fs_path = self.path_ftp_to_fs(file.ftp_path, creator_username=file.creator_username)
 
             if not fs_path.exists():
                 raise FileNotFoundError(
@@ -676,7 +702,7 @@ class FileSystem:
                     ano_can_execute,
                 ) = self.access_level_str_to_bools(anonymous_accesslevel)
 
-                folder = File(ftp_path=str(ftp_path), is_dir=True)
+                folder = File(ftp_path=str(ftp_path), is_dir=True, creator_username=self.current_username)
                 fs_path = self.path_ftp_to_fs(folder.ftp_path)
 
                 # check if parent directory exists
@@ -737,7 +763,7 @@ class FileSystem:
                 if not folder:
                     raise FileNotFoundError("Directory not found in database")
 
-                fs_path = self.path_ftp_to_fs(folder.ftp_path)
+                fs_path = self.path_ftp_to_fs(folder.ftp_path, creator_username=folder.creator_username)
 
                 # check if directory exists
                 if not fs_path.exists():
@@ -782,8 +808,8 @@ class FileSystem:
             raise FileNotFoundError(f"Directory not found: {target_ftp_path}")
 
         # Update current directory
-        self.current_ftp_dir = target_ftp_path
-        self.logger.info(f"Changed directory to {target_ftp_path}")
+        self.current_ftp_dir = ftp_path
+        self.logger.info(f"Changed directory to {ftp_path}")
 
     @login_required
     @resolve_path("ftp_path")
@@ -797,16 +823,28 @@ class FileSystem:
         :param db_session: Database session.
         :return: List of files in the directory.
         """
+        current_username = self.current_username
+        
         # Handle root
         if ftp_path == PurePath("/"):
             files = (
-                db_session.query(File)
+                db_session.query(
+                    File,
+                    (File.creator_username != self.current_username).label('is_shared')
+                )
                 .join(Ownership)
                 .join(AccessLevel)
                 .filter(Ownership.user_id == self.current_user_id)
                 .filter(
-                    ~File.ftp_path.like(f"{PurePath('/')}%{PurePath('/')}%")
-                )
+                    or_(
+                        # Only apply path filter for files user created
+                        and_(
+                            File.creator_username == current_username,
+                            ~File.ftp_path.like(f"{PurePath('/')}%{PurePath('/')}%")
+                        ),
+                        # Show all shared files without path filter
+                        File.creator_username != current_username
+                    ))
                 .filter(AccessLevel.can_read.is_(True))
                 .all()
             )
@@ -817,10 +855,14 @@ class FileSystem:
                 ftp_path: str = str(ftp_path) + str(PurePath("/"))
 
             files = (
-                db_session.query(File)
+                db_session.query(
+                    File,
+                    (File.creator_username != self.current_username).label('is_shared')
+                )
                 .join(Ownership)
                 .join(AccessLevel)
                 .filter(Ownership.user_id == self.current_user_id)
+                .filter(File.creator_username == current_username)
                 .filter(File.ftp_path.startswith(ftp_path))
                 .filter(~File.ftp_path.like(f"{ftp_path}%{PurePath('/')}%"))
                 .filter(AccessLevel.can_read.is_(True))
@@ -842,8 +884,8 @@ class FileSystem:
             files = self._list_dir(ftp_path, db_session=session)
             file_list = []
 
-            for file in files:
-                fs_path = self.path_ftp_to_fs(file.ftp_path)
+            for file, is_shared in files:
+                fs_path = self.path_ftp_to_fs(file.ftp_path, creator_username=file.creator_username)
 
                 if not fs_path.exists():
                     self.logger.warning(
@@ -877,7 +919,7 @@ class FileSystem:
                     "group": self.current_username,
                     "size": stats.st_size,
                     "date": date,
-                    "name": fs_path.name,
+                    "name": fs_path.name if not is_shared else file.ftp_path,
                 }
 
                 file_list.append(file_info)
@@ -916,14 +958,16 @@ class FileSystem:
                 f"modify={format_mlsd_time(stats.st_mtime)}",
                 f"perms={format_mlsd_perms(perms)}",
             ]
-            return f"{';'.join(facts)}; {PurePath(file_obj.ftp_path).name}"
+            return f"{';'.join(facts)}; {PurePath(file_obj.ftp_path).name if not is_shared else file_obj.ftp_path}"
 
         with self.get_db_session() as session:
             files = self._list_dir(ftp_path, db_session=session)
 
             mlsd_list = []
-            for file in files:
-                fs_path = self.path_ftp_to_fs(file.ftp_path)
+            for file, is_shared in files:
+                if not file:
+                    continue
+                fs_path = self.path_ftp_to_fs(file.ftp_path, creator_username=file.creator_username)
 
                 if not fs_path.exists():
                     self.logger.warning(
@@ -955,6 +999,13 @@ class FileSystem:
         :param ftp_path: FTP path of the file or directory to rename.
         :param new_name: New name for the file or directory.
         """
+        new_name = new_name.strip().strip("/")
+        if "/" in new_name:
+            new_name = new_name.split("/")[-1]
+        
+        elif "\\" in new_name:
+            new_name = new_name.split("\\")[-1]
+        
         # Check permissions
         if not self.get_permission(ftp_path).can_write:
             raise PermissionError("No write permission")
@@ -969,7 +1020,7 @@ class FileSystem:
                 if not file:
                     raise FileNotFoundError("File not found in database")
 
-                fs_path = self.path_ftp_to_fs(file.ftp_path)
+                fs_path = self.path_ftp_to_fs(file.ftp_path, creator_username=file.creator_username)
 
                 # Check if file exists
                 if not fs_path.exists():
