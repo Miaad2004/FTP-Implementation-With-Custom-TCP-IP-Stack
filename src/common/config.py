@@ -8,7 +8,7 @@ class ConfigHandler:
     A class to handle loading and validating configuration from a JSON file.
     """
 
-    config_file_path = "server_config_linux.json"
+    config_file_path = "server_config.json"
 
     def __init__(self, config_file=None):
         """

@@ -231,6 +231,7 @@ class FTPClient:
                 data_socket = self.ssl_context.wrap_socket(
                     data_socket,
                     server_hostname=self.host,
+                    do_handshake_on_connect=False,
                     session=self.control_socket.session,
                 )
 
@@ -282,6 +283,7 @@ class FTPClient:
                 data_socket = self.ssl_context.wrap_socket(
                     data_socket,
                     server_hostname=self.host,
+                    do_handshake_on_connect=False,
                     session=self.control_socket.session,
                 )
 
@@ -334,6 +336,7 @@ class FTPClient:
                 data_socket = self.ssl_context.wrap_socket(
                     data_socket,
                     server_hostname=self.host,
+                    do_handshake_on_connect=False,
                     session=self.control_socket.session,
                 )
 

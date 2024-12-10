@@ -7,13 +7,13 @@
     "ssl_key_path": "D:/Uni/Term_5/Computer_Networks/test/server-key.pem",
     "implicit_tls": false,
     "support_FTPS": true,
-    "debug_mode": true,
+    "debug_mode": false,
     "log_level": "INFO",  
-    "use_custom_transport": true,
+    "use_custom_transport": false,
     "interface": "eth0",
     "pasv_ports": {
         "start": 49155 ,
-        "end": 49155
+        "end": 50155
     },
     "listing_options": {
         "use_MLSD_for_LIST": true,

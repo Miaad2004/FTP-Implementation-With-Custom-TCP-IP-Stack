@@ -1,8 +1,15 @@
 from client import FTPClient
 from colorama import Fore, Style, init
+import os
+
+
+def clear_console():
+    os.system('cls' if os.name == 'nt' else 'clear')
+
 
 def main():
     init(autoreset=True)  # Automatically reset colors after each print
+    clear_console()
     host = input(f"{Fore.CYAN}Enter FTP server address: {Style.RESET_ALL}")
     port = int(input(f"{Fore.CYAN}Enter port (default 21): {Style.RESET_ALL}") or "21")
     use_tls = input(f"{Fore.CYAN}Use TLS (y/n)? {Style.RESET_ALL}").lower() == 'y'
