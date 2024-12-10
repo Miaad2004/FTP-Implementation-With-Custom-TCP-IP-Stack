@@ -1,79 +1,111 @@
-from .transport_interface import Transport, SecureUpgradable
-from typing import Tuple, Any, Optional
-import ssl
+from .transport_interface import Transport
+from typing import Tuple, Any
 import logging
-from src.core.tcp.tcp import TCPConnection, ConnectionState
-import sys
+from src.core.tcp.tcp import TCPConnection
+from src.common.utils import get_iface_ip, get_iface_mac, get_gateway_info
+import os
+from src.common.config import config_handler
 
 
-class CustomTCPTransport(Transport, SecureUpgradable):
-    def __init__(self):
-        # abort if not on Linux
-        if not sys.platform.startswith('linux'):
-            raise NotImplementedError("Custom TCP transport only supported on Linux")
-        
-        self.tcp_connection = None
-        self.is_secure = False
-        self.ssl_session: Optional[ssl.SSLSession] = None
+class CustomTCPTransport(Transport):
+    def __init__(self, tcp_connection=None):
+        # abort if not on posix
+        if not os.name == "posix":
+            raise Exception(
+                "Custom TCP transport only supported on POSIX systems"
+            )
+
+        self.addr = None
+        self.tcp_connection = tcp_connection
         self.logger = logging.getLogger(__name__)
+        self.sockname = None
 
     def connect(self, host: str, port: int) -> None:
-        # Configure your TCP connection parameters
-        interface = 'eth0'  # Change as needed
-        source_MAC = "00:15:5d:69:b4:e5"  # Change to your MAC
-        dest_MAC = "00:15:5d:ac:5f:57"    # Change to target MAC
-        source_ip = "172.18.121.202"      # Change to your IP
-        source_port = 12345               # Change or randomize
-
-        self.tcp_connection = TCPConnection(
-            source_MAC=source_MAC,
-            dest_MAC=dest_MAC, 
-            source_ip=source_ip,
-            dest_ip=host,
-            source_port=source_port,
-            dest_port=port,
-            interface=interface
+        # for client
+        raise NotImplementedError(
+            "Client-side operations not implemented in custom TCP transport"
         )
-        
-        # Open connection with timeout
-        self.tcp_connection.open(wait_until_established=True, timeout=10)
-        
-        if self.tcp_connection.status() != ConnectionState.ESTABLISHED:
-            raise ConnectionError("Failed to establish TCP connection")
 
-    def send(self, data: bytes) -> int:
+    def send(self, data: bytes, push: bool = True) -> None:
         if not self.tcp_connection:
             raise Exception("Not connected")
-        
-        self.tcp_connection.send(data)
-        return len(data)
 
-    def receive(self, buffer_size: int) -> bytes:
+        try:
+            self.tcp_connection.send(data)
+
+        except Exception as e:
+            self.logger.error(f"Error sending data: {e}")
+            raise
+
+    def receive(self, buffer_size: int, time_out=5) -> bytes:
         if not self.tcp_connection:
             raise Exception("Not connected")
-            
+
         try:
             return self.tcp_connection.receive(timeout=5)
-        except TimeoutError:
-            return b''
+
+        except Exception as e:
+            self.logger.error(f"Error receiving data: {e}")
+            raise
 
     def close(self) -> None:
         if self.tcp_connection:
             self.tcp_connection.close()
             self.tcp_connection = None
 
-    def bind(self, host: str, port: int) -> None:
-        raise NotImplementedError("Server-side operations not implemented")
+    def bind(self, host: str, port: int, interface: str = None) -> None:
+        iface_config = config_handler.get("interface")
+        
+        if not interface and not iface_config:
+            raise Exception("Interface not specified")
+        
+        if not interface:
+            interface = iface_config
+        
+        iface_ip = get_iface_ip(interface)
+        iface_mac = get_iface_mac(interface)
+        _, gateway_mac = get_gateway_info(interface)
 
-    def listen(self, backlog: int = 1) -> None: 
-        raise NotImplementedError("Server-side operations not implemented")
+        self.tcp_connection = TCPConnection(
+            iface=interface,
+            iface_mac=iface_mac,
+            iface_ip=iface_ip,
+            gateway_mac=gateway_mac,
+            listen_ip=host,
+            listen_port=port,
+            is_server=True,
+        )
+        
+        self.sockname = (host, port)
+        
 
-    def accept(self) -> Tuple["Transport", Any]:
-        raise NotImplementedError("Server-side operations not implemented")
+    def listen(self, backlog: int = 1) -> None:
+        if not self.tcp_connection:
+            raise Exception("Not bound")
 
-    def upgrade_to_secure(self,
-                         ssl_context: ssl.SSLContext = None,
-                         do_handshake_on_connect: bool = True,
-                         server_side: bool = False,
-                         session: ssl.SSLSession = None) -> "Transport":
-        raise NotImplementedError("SSL/TLS not implemented in custom TCP")
+        try:
+            self.tcp_connection.listen(backlog=backlog)
+
+        except Exception as e:
+            self.logger.error(f"Error listening: {e}")
+            raise
+
+    def accept(self) -> Tuple["CustomTCPTransport", Any]:
+        if not self.tcp_connection:
+            raise Exception("Not bound")
+
+        try:
+            client, addr = self.tcp_connection.accept()
+            client = CustomTCPTransport(tcp_connection=client)
+            client.sockname = self.sockname
+            return client, addr
+
+        except Exception as e:
+            self.logger.error(f"Error accepting connection: {e}")
+            raise
+    
+    def getsockname(self) -> Tuple[str, int]:
+        if not self.sockname:
+            raise Exception("Not bound")
+        
+        return self.sockname

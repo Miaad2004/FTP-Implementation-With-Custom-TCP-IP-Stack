@@ -40,6 +40,11 @@ class Transport(ABC):
     def accept(self) -> Tuple["Transport", Any]:
         """Accept incoming connection"""
         pass
+    
+    @abstractmethod
+    def getsockname(self) -> Tuple[str, int]:
+        """Return the local address to which the socket is bound"""
+        pass
 
 
 class SecureUpgradable(ABC):

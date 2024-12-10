@@ -27,6 +27,10 @@ class PythonSocketTransport(Transport, SecureUpgradable):
         self._is_secure = False
         self.logger = logging.getLogger(__name__)
 
+    @property
+    def ssl_session(self) -> Optional[ssl.SSLSession]:
+        return self._socket.session if self._is_secure else None
+
     def connect(self, host: str, port: int) -> None:
         """
         Connect to a remote socket at the given address.
@@ -133,7 +137,7 @@ class PythonSocketTransport(Transport, SecureUpgradable):
         return ssl_context
 
     def upgrade_to_secure(
-        self, ssl_context: Optional[SSLContext]
+        self, ssl_context: SSLContext
     ) -> "PythonSocketTransport":
         """
         Upgrade the connection to use SSL/TLS.
@@ -145,6 +149,8 @@ class PythonSocketTransport(Transport, SecureUpgradable):
             return self
 
         try:
+            self._socket.settimeout(5)
+            
             self._socket = ssl_context.wrap_socket(self._socket,
                                                    server_side=True)
             self._ssl_context = ssl_context
@@ -179,3 +185,12 @@ class PythonSocketTransport(Transport, SecureUpgradable):
         :return: True if the connection is secure, False otherwise.
         """
         return self._is_secure
+    
+    def getsockname(self) -> Tuple[str, int]:
+        """
+        Return the local address to which the socket is bound.
+
+        :return: A tuple containing the local address and port.
+        """
+        return self._socket.getsockname()
+    
