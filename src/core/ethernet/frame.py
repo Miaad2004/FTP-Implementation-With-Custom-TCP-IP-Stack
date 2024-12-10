@@ -4,6 +4,8 @@ from src.common.utils import mac_addr_to_bytes
 
 
 class EthernetFrame:
+    IEEE802_3_CRC_GENERATOR = 0xEDB88320
+
     def __init__(
         self,
         source_mac: str,
@@ -12,16 +14,9 @@ class EthernetFrame:
         ether_type: EthernetType,
         use_software_crc: bool = True,
     ):
-        """
-        Initialize an EthernetFrame instance.
-
-        :param source_mac: Source MAC address as a string.
-        :param dest_mac: Destination MAC address as a string.
-        :param payload: Payload data as bytes.
-        :param ether_type: Ethernet type as an instance of EthernetType.
-        :param use_software_crc: Boolean indicating whether
-                                 to use software CRC.
-        """
+        if len(payload) < 46 or len(payload) > 1500:
+            raise ValueError("Payload size must be between 46 and 1500 bytes")
+        
         self.source_mac: str = source_mac
         self.dest_mac: str = dest_mac
         self.ether_type: EthernetType = ether_type
@@ -30,11 +25,6 @@ class EthernetFrame:
         self._frame: bytes = self._build_frame()
 
     def _build_frame(self) -> bytes:
-        """
-        Build the Ethernet frame.
-
-        :return: The complete Ethernet frame as bytes.
-        """
         header: bytes = struct.pack(
             "!6s6sH",
             mac_addr_to_bytes(self.dest_mac),
@@ -44,6 +34,7 @@ class EthernetFrame:
 
         frame: bytes = header + self.payload
 
+        # Calculate and append CRC
         if self.use_software_crc:
             crc: bytes = self._calculate_CRC(frame)
             frame += crc
@@ -52,19 +43,17 @@ class EthernetFrame:
 
     @property
     def frame(self) -> bytes:
-        """
-        Get the Ethernet frame.
-
-        :return: The complete Ethernet frame as bytes.
-        """
         return self._frame
 
     @staticmethod
     def _calculate_CRC(frame: bytes) -> bytes:
-        """
-        Calculate the CRC for the given frame.
-
-        :param frame: The Ethernet frame as bytes.
-        :return: The CRC as bytes.
-        """
-        raise NotImplementedError("CRC calculation not implemented yet.")
+        crc = 0xFFFFFFFF
+        for byte in frame:
+            crc ^= byte
+            for _ in range(8):
+                if crc & 1:
+                    crc = (crc >> 1) ^ EthernetFrame.IEEE802_3_CRC_GENERATOR
+                else:
+                    crc >>= 1
+        crc ^= 0xFFFFFFFF
+        return struct.pack('<I', crc)
