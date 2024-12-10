@@ -198,7 +198,7 @@ def block_linux_reset_packets():
     cmd = ['sudo', 'iptables', '-A', 'OUTPUT', '-p', 'tcp', '--tcp-flags', 'RST', 'RST', '-j', 'DROP']
     
     try:
-       # subprocess.check_call(cmd)
+        subprocess.check_call(cmd)
         print("Blocked kernel RST packets successfully.")
         
     except subprocess.CalledProcessError as e:
@@ -213,7 +213,7 @@ def unblock_linux_reset_packets():
     
     cmd = ['sudo', 'iptables', '-D', 'OUTPUT', '-p', 'tcp', '--tcp-flags', 'RST', 'RST', '-j', 'DROP']
     try:
-       # subprocess.check_call(cmd)
+        subprocess.check_call(cmd)
         print("Unblocked kernel RST packets successfully.")
         
     except subprocess.CalledProcessError as e:

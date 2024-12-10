@@ -131,9 +131,10 @@ class ClientHandler:
             while True:
                 try:
                     data = self.control_transport.receive(1024)
-                    data = data.decode("utf-8").strip()
                     if not data:
-                        break
+                        continue
+                    
+                    data = data.decode("utf-8").strip()
 
                     self.logger.info(f"Received cmd {data}")
                     self.handle_cmd(data)
@@ -446,7 +447,7 @@ class ClientHandler:
             with FileLock(f"{file_path}.lock"):
                 with open(file_path, "wb") as f:
                     while True:
-                        data = conn.receive(1024)
+                        data = conn.receive(20048)
                         if not data:
                             break
                         f.write(data)

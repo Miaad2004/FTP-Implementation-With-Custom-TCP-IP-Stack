@@ -74,6 +74,7 @@ class CustomTCPTransport(Transport):
             listen_ip=host,
             listen_port=port,
             is_server=True,
+            timeout=None,
         )
         
         self.sockname = (host, port)

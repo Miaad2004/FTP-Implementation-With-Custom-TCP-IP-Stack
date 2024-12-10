@@ -43,6 +43,9 @@ class TCB:
         self.retransmission_timeout: int = 5
         self.keep_alive_timeout: int = 50
         self.last_activity_time: Optional[float] = None
+        
+        self.send_window: int = 0  
+        self.recv_window: int = 65535 
     
     @property
     def initial_our_seq_number(self) -> int:
@@ -209,6 +212,7 @@ class TCPConnection:
         tcp_header.ACK = ACK
         tcp_header.FIN = FIN
         tcp_header.RST = RST
+        tcp_header.window = self.tcb.recv_window - len(self.tcb.receive_buffer)
         tcp_header.sequence_number = self.tcb.our_seq_number
 
         if ACK:
@@ -225,7 +229,7 @@ class TCPConnection:
         :param tcp_packet: The TCP packet to send.
         :param is_retransmission: Boolean indicating if the packet is a retransmission.
         """
-        tcp_packet.send_or_recv_time = get_current_time()
+        tcp_packet.send_or_recv_time = time.time()
         tcp_packet_built = tcp_packet.build_packet()
 
         # Create IP header
@@ -282,7 +286,7 @@ class TCPConnection:
                 ip_header, tcp_header, payload, checksums_correct = self._parse_packet(packet)
                 
                 if not checksums_correct:
-                    self.logger.warning("a packet with an incorrect IP or TCP checksum was received")
+                    #self.logger.warning("a packet with an incorrect IP or TCP checksum was received")
                     continue
                 
                 # Filter packets based on mode
@@ -297,7 +301,7 @@ class TCPConnection:
                         continue
 
                 # packet verified
-                self.last_activity_time = get_current_time()
+                self.tcb.last_activity_time = time.time()
 
                 if self.tcb.initial_peer_seq_number:
                     self.logger.debug(f"Packet received. seq number: {tcp_header.sequence_number - self.tcb.initial_peer_seq_number}")
@@ -309,15 +313,14 @@ class TCPConnection:
                 continue
 
     def _timer(self):
-        return
         while self.connection_state != ConnectionState.CLOSED:
             # Handle keep-alive
             if self.connection_state == ConnectionState.ESTABLISHED:
-                if (get_current_time() - self.last_activity_time > self.keep_alive_timeout):
+                if (time.time() - self.tcb.last_activity_time > self.tcb.keep_alive_timeout):
                     packet = self.create_packet(SYN=False, ACK=True, FIN=False, RST=False)
                     packet.header.sequence_number = self.tcb.our_seq_number - 1
                     self.send_packet(packet)
-                    self.last_activity_time = get_current_time()
+                    self.tcb.last_activity_time = time.time()
 
                     self.logger.info("Keep-alive packet sent")
 
@@ -420,6 +423,8 @@ class TCPConnection:
             self.logger.warning("Invalid SYN-ACK received. (state is not SYN_SENT)")
 
     def on_ACK_received(self, ip_header, tcp_header, payload):
+        self.tcb.send_window = tcp_header.window
+        
         # Update server sequence number
         if self.connection_state == ConnectionState.ESTABLISHED:
             # self.tcb.peer_seq_number = tcp_header.sequence_number
@@ -442,6 +447,8 @@ class TCPConnection:
             if tcp_header.sequence_number < self.tcb.peer_seq_number:
                 self.logger.debug("Duplicate data segment received")
                 return
+            
+            #self.tcb.recv_window -= len(payload)
             
             self.tcb.peer_seq_number += len(payload)
             self.receive_buffer[tcp_header.sequence_number] = payload
@@ -562,14 +569,14 @@ class TCPConnection:
         self.listener_thread.start()
         self.timer_thread.start()
 
-        send_time = get_current_time()
+        send_time = time.time()
         self.connection_state = ConnectionState.SYN_SENT
         packet = self.create_packet(SYN=True, ACK=False, FIN=False, RST=False)
         self.send_packet(packet)
 
         if wait_until_established:
             while self.connection_state != ConnectionState.ESTABLISHED:
-                if get_current_time() - send_time > timeout:
+                if time.time() - send_time > timeout:
                     raise TimeoutError("Connection establishment timed out")
 
                 time.sleep(0.1)
@@ -590,17 +597,26 @@ class TCPConnection:
         if self.connection_state != ConnectionState.ESTABLISHED:
             raise Exception("Connection not established")
 
-        packet = self.create_packet(
-            SYN=False, ACK=True, FIN=False, RST=False, payload=payload
-        )
-        self.send_packet(packet)
+        bytes_sent = 0
+        while bytes_sent < len(payload):
+            window = self.tcb.send_window# - (self.tcb.our_seq_number - self.tcb.last_received_ack)
+            if window <= 0:
+                # Wait for window update
+                print("waiting for window update")
+                time.sleep(0.1)
+                continue
 
-    def receive(self, max_size=4096, timeout=5) -> bytes:
+            segment = payload[bytes_sent:bytes_sent + window]
+            packet = self.create_packet(SYN=False, ACK=True, FIN=False, RST=False, payload=segment)
+            self.send_packet(packet)
+            bytes_sent += len(segment)
+
+    def receive(self, max_size=4096, timeout=None) -> bytes:
         start_time = time.time()
-        while not self.receive_buffer:
-            if time.time() - start_time > timeout:
-                raise TimeoutError("Receive operation timed out")
-            time.sleep(0.2)
+        # while not self.receive_buffer:
+        #     if timeout and time.time() - start_time > timeout:
+        #         raise TimeoutError("Receive operation timed out")
+        #     time.sleep(0.2)
 
         sorted_keys = sorted(self.receive_buffer.keys())
         data = b""
@@ -612,7 +628,10 @@ class TCPConnection:
             data += self.receive_buffer[key]
             self.receive_buffer.pop(key)
         
-        self.logger.debug(f"Passed {len(data)} bytes of data to application.")
+        #self.tcb.recv_window += len(data)
+        if len(data) != 0:
+            self.logger.debug(f"Passed {len(data)} bytes of data to application.")
+        
         return data
 
     def abort(self):

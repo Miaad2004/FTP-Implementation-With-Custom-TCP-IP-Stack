@@ -23,6 +23,7 @@ class PythonSocketTransport(Transport, SecureUpgradable):
         self._socket = (
             sock if sock else socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         )
+
         self._ssl_context = None
         self._is_secure = False
         self.logger = logging.getLogger(__name__)
@@ -130,7 +131,7 @@ class PythonSocketTransport(Transport, SecureUpgradable):
         ssl_context.check_hostname = False
         ssl_context.verify_mode = ssl.CERT_NONE
         ssl_context.set_ciphers(
-            "HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK"
+            "HIGH:!aNULL:!eNULL:!EXPORT:!DES:!RC4:!MD5:!PSK:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-RSA-AES128-GCM-SHA256"
         )
         ssl_context.options |= ssl.OP_NO_TLSv1 | ssl.OP_NO_TLSv1_1
 

@@ -13,10 +13,7 @@ class EthernetFrame:
         payload: bytes,
         ether_type: EthernetType,
         use_software_crc: bool = True,
-    ):
-        if len(payload) < 46 or len(payload) > 1500:
-            raise ValueError("Payload size must be between 46 and 1500 bytes")
-        
+    ):        
         self.source_mac: str = source_mac
         self.dest_mac: str = dest_mac
         self.ether_type: EthernetType = ether_type
@@ -35,7 +32,7 @@ class EthernetFrame:
         frame: bytes = header + self.payload
 
         # Calculate and append CRC
-        if self.use_software_crc:
+        if not self.use_software_crc:
             crc: bytes = self._calculate_CRC(frame)
             frame += crc
 
