@@ -5,11 +5,11 @@ SERVER_PATH="./"
 VENV_PATH="$SERVER_PATH/venv"
 REQUIREMENTS_FILE="$SERVER_PATH/requirements.txt"
 SERVER_SCRIPT="$SERVER_PATH/start_server.py"
-MIN_PYTHON_VERSION="3.6"
+MIN_PYTHON_VERSION="3.10"
 
 # Function to check Python version
 check_python_version() {
-    PYTHON_VERSION=$(python --version 2>&1)
+    PYTHON_VERSION=$(python3.13 --version 2>&1)
     if [[ $PYTHON_VERSION =~ Python\ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
         CURRENT_VERSION=${BASH_REMATCH[1]}
         if [[ $(echo -e "$CURRENT_VERSION\n$MIN_PYTHON_VERSION" | sort -V | head -n1) != "$MIN_PYTHON_VERSION" ]]; then
@@ -28,7 +28,7 @@ check_python_version() {
 setup_venv() {
     if [ ! -d "$VENV_PATH" ]; then
         echo "Setting up virtual environment..."
-        python -m venv "$VENV_PATH"
+        python3.13 -m venv "$VENV_PATH"
         echo "Virtual environment setup complete."
     else
         echo "Virtual environment already exists."
