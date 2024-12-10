@@ -1,0 +1,22 @@
+{
+    "ftp_host": "172.18.121.202",
+    "ftp_port": 237,
+    "file_system_db_path": "sqlite:///filesystem.db?mode=rw",
+    "file_system_root_dir": "/home/ubuntu/DEBUG_ONLY_CN_PROJ_PHASE_2/fs_root",
+    "ssl_cert_path": "/mnt/d/Uni/Term_5/Computer_Networks/test/server-cert.pem", 
+    "ssl_key_path": "/mnt/d/Uni/Term_5/Computer_Networks/test/server-key.pem",
+    "implicit_tls": false,
+    "support_FTPS": false,
+    "debug_mode": false,
+    "log_level": "INFO",  
+    "use_custom_transport": true,
+    "interface": "eth0",
+    "pasv_ports": {
+        "start": 40155 ,
+        "end": 50155
+    },
+    "listing_options": {
+        "use_MLSD_for_LIST": true,
+        "show_hidden": false
+    }
+}
