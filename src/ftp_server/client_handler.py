@@ -1,12 +1,14 @@
 import logging
 import random
 from functools import wraps
+import time
+import atexit
 
 from filelock import FileLock
 
 from src.common.config import config_handler
 from src.file_system.file_system import FileSystem
-from src.transport.socket_transport import PythonSocketTransport
+from src.transport.transport_interface import Transport
 
 logging.basicConfig(level=logging.INFO)
 
@@ -36,7 +38,7 @@ class ClientHandler:
         features (list): List of supported FTP features.
     """
 
-    def __init__(self, transport: PythonSocketTransport, addr, server):
+    def __init__(self, transport: Transport, addr, server):
         """
         Initializes the ClientHandler.
 
@@ -46,6 +48,8 @@ class ClientHandler:
             addr (tuple): The address of the client.
             server: The server instance.
         """
+        atexit.register(self.at_exit)
+        
         self.transport = transport.__class__
         self.control_transport = transport
         self.data_transport = None
@@ -243,8 +247,7 @@ class ClientHandler:
 
             except Exception as e:
                 self.logger.error(f"TLS negotiation failed: {e}")
-                if not self.control_transport._socket._closed:
-                    self.send_res("550 TLS negotiation failed")
+                self.send_res("550 TLS negotiation failed")
 
                 if self.debug:
                     raise e
@@ -334,12 +337,12 @@ class ClientHandler:
                     self.pasv_port_range_start, self.pasv_port_range_end
                 )
                 self.logger.info(
-                    f"Listening for passive mode connection on port {port}"
+                    f"Listening for passive mode connection on  {self.server.host}:{port}"
                 )
 
-                self.data_transport.bind(self.addr[0], port)
+                self.data_transport.bind(self.server.host, port)
                 self.data_transport.listen()
-                ip, port = self.data_transport._socket.getsockname()
+                ip, port = self.data_transport.getsockname()
                 self.in_pasv_mode = True
 
                 ip_parts = ip.split(".")
@@ -506,6 +509,7 @@ class ClientHandler:
                 raise e
 
         finally:
+            time.sleep(0.5)
             conn.close()
 
             if self.data_transport:
@@ -924,3 +928,17 @@ class ClientHandler:
             args: The arguments provided with the ALLONE command.
         """
         self.send_res("202 Command not implemented, superfluous at this site.")
+    
+    def at_exit(self):
+        self.logger.debug("Trying to close all sockets....")
+        try:
+            self.control_transport.close()
+        
+        except Exception:
+            pass
+        
+        try:
+            self.data_transport.close()
+        
+        except Exception:
+            pass

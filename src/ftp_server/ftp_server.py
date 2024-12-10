@@ -1,16 +1,19 @@
 import logging
-import multiprocessing
+import threading
 from datetime import datetime
+import sys
+import atexit
 
 import pyfiglet
 from colorama import Fore, init
 
+from src.common.utils import clear_console, block_linux_reset_packets, unblock_linux_reset_packets
 from src.common.config import config_handler
 from src.transport.socket_transport import PythonSocketTransport
+from src.transport.custom_tcp_transport import CustomTCPTransport
 from .client_handler import ClientHandler
 
 init()
-logging.basicConfig(level=logging.INFO)
 
 VERSION = "1.0.0"
 
@@ -52,6 +55,7 @@ class FTPServer:
         port : int, optional
             The port number on which the server listens (default is None).
         """
+        atexit.register(self.at_exit)
         self.print_banner()
 
         if host is None:
@@ -61,8 +65,7 @@ class FTPServer:
             self.port = config_handler.get("ftp_port")
 
         self.logger = logging.getLogger(__name__)
-
-        self.transport = PythonSocketTransport()
+        
         self.certificate_path = config_handler.get("ssl_cert_path")
         self.key_path = config_handler.get("ssl_key_path")
         self.implicit_tls = config_handler.get("implicit_tls")
@@ -71,6 +74,21 @@ class FTPServer:
             self.certificate_path, self.key_path
         )
 
+        if config_handler.get("use_custom_transport"):
+            if self.support_FTPS or self.implicit_tls:
+                raise Exception(
+                    "Custom transport not supported with FTPS or implicit TLS"
+                )
+            
+            else:
+                atexit.register(unblock_linux_reset_packets)
+                block_linux_reset_packets()
+                self.transport = CustomTCPTransport()
+                self.logger.info("Using custom TCP transport")
+        
+        else:
+            self.transport = PythonSocketTransport()
+        
         if self.implicit_tls and self.support_FTPS:
             self.logger.info("Implicit TLS enabled")
             self.transport.upgrade_to_secure(self.ssl_context)
@@ -86,10 +104,10 @@ class FTPServer:
         while True:
             client, addr = self.transport.accept()
             self.logger.info(f"New connection from {addr}")
-            process = multiprocessing.Process(
+            thread = threading.Thread(
                 target=self.handle_client, args=(client, addr)
             )
-            process.start()
+            thread.start()
 
     def handle_client(self, client, addr):
         """
@@ -105,17 +123,27 @@ class FTPServer:
         client_handler = ClientHandler(client, addr, server=self)
         client_handler.run()
 
+    def at_exit(self):
+        self.logger.debug("Exiting server")
+        try:
+            self.transport.close()
+        
+        except:
+            pass
+    
     @staticmethod
     def print_banner():
         """
         Prints the server banner with version and start time.
         """
+        clear_console()
         ascii_banner = pyfiglet.figlet_format("Swift File")
         print(Fore.CYAN + ascii_banner + Fore.RESET)
         print(
             Fore.GREEN
             + f"SwiftFile FTP Server v{VERSION} started at: "
             + f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            + f"on python {sys.version.split()[0]}"
             + Fore.RESET
         )
         print("-" * 60 + "\n")
