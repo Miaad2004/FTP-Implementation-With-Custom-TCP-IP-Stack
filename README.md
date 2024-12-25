@@ -1,87 +1,154 @@
-# FTP Server
+# Swift FTP Server With Custom TCP/IP Stack
 
-A secure FTP server and client implementation in Python with support for TLS encryption, user authentication, and file system permissions.
+A secure FTP server and client implementation in Python featuring a custom TCP/IP stack, built-in file system with SQLite backend, and interactive command-line interfaces.
 
 ## Features
 
-- FTP server supporting standard FTP commands (RFC 959)
-- TLS/SSL encryption support 
+### Core Features
+- Standard FTP command support (RFC 959)
+- TLS/SSL encryption (FTPS)
 - User authentication and access control
 - File system permissions management
-- Interactive command line client
 - Passive mode data transfers
-- Support for basic FTP operations:
-  - File upload/download
-  - Directory listing
-  - Directory creation/removal
-  - File renaming
-  - File deletion
-  - Permission changes
+- Compatible with FileZilla and other standard FTP clients
+
+### Built-in File System
+- SQLite-backed virtual file system
+- File ownership management
+- Access control
+- Interactive file system CLI
+
+### Client Features
+- Interactive command-line client
+- TLS/FTPS support
+
+### Custom TCP/IP Stack
+- Raw socket TCP implementation
+- Connection establishment (3-way handshake)
+- Keep-Alive 
+- TCP flags, sequence numbers, window sizing
+
+## Supported FTP Commands
+
+### Authentication Commands
+- `USER` - Login username
+- `PASS` - Login password
+- `REIN` - Reinitialize session
+- `QUIT` - End session
+
+### File Operations
+- `RETR` - Download file 
+- `STOR` - Upload file
+- `DELE` - Delete file
+- `RNFR` - Rename from (source)
+- `RNTO` - Rename to (destination)
+
+### Directory Operations
+- `LIST` - List files
+- `MLSD` - Machine list directory
+- `PWD` - Print working directory
+- `CWD` - Change working directory 
+- `CDUP` - Change to parent directory
+- `MKD` - Create directory
+- `RMD` - Remove directory
+
+### Settings & Info
+- `TYPE` - Set transfer type
+- `OPTS` - Set options
+- `FEAT` - Get features
+- `SYST` - Get system info
+- `HELP` - Show help
+- `NOOP` - No operation
+
+### Security Commands
+- `AUTH TLS` - Initialize TLS
+- `PBSZ` - Protection buffer size
+- `PROT` - Data channel protection level
+
+## File System CLI Commands
+
+- `login <user> <pass>` - Login to system
+- `logout` - Logout from system
+- `ls [path]` - List directory contents
+- `cd <path>` - Change directory
+- 
+
+pwd
+
+ - Print working directory
+- 
+
+mkdir <path>
+
+ - Create directory
+- 
+
+rmdir <path>
+
+ - Remove directory
+- 
+
+touch <file>
+
+ - Create empty file
+- `rm <file>` - Remove file
+- 
+
+chmod <path> <perms>
+
+ - Change permissions
+- 
+
+rename <old> <new>
+
+ - Rename file/directory
 
 ## Installation
 
+### Starting the Server
+```bash
+# Linux
+./deploy_server.sh
+
+# Windows 
+.\deploy_server.ps1
+```
+
+Or manually:
+
 1. Clone the repository
 2. Install dependencies:
-```sh
+```bash 
 pip install -r requirements.txt
 ```
 
-## Usage
-
-### Starting the Server
-
-Run the server using:
-
-```sh
+```bash
+pip install -r requirements.txt
 python start_server.py
 ```
 
-### Using the Client 
-
-Run the interactive client:
-
-```sh
+### Using the FTP Client
+```bash
 python src/ftp_client/start_client.py
 ```
 
-Available client commands:
-- `USER <username>` - Login with username
-- `PASS <password>` - Send password
-- `LIST` - List files in current directory
-- `CWD <path>` - Change working directory
-- `PWD` - Print working directory
-- `RETR <filename>` - Download file
-- `STOR <filename>` - Upload file
-- `DELE <filename>` - Delete file
-- `MKD <dirname>` - Create directory
-- `RMD <dirname>` - Remove directory
-- `RNFR/RNTO` - Rename files
-- `QUIT` - Exit session
-
-### File System CLI
-
-For direct file system management:
-
-```sh
-python file_system_cli.py
+### Using the File System CLI
+```bash
+python file_system_cli.py -i
 ```
 
 ## Configuration
 
-Server settings can be configured in 
+Server settings in 
 
 server_config.json
 
 :
-- Port number
-- TLS settings
-- Root directory
-- Database path
-
-## Testing
-
-Run the test suite:
-
-```sh
-python -m pytest test_server.py
+```json
+{
+    "ftp_host": "127.0.0.1", 
+    "ftp_port": 229,
+    "use_custom_transport": false,
+    "support_FTPS": true
+}
 ```
