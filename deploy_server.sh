@@ -1,13 +1,10 @@
-#!/bin/bash
-
-# Define variables
 SERVER_PATH="./"
 VENV_PATH="$SERVER_PATH/venv"
 REQUIREMENTS_FILE="$SERVER_PATH/requirements.txt"
 SERVER_SCRIPT="$SERVER_PATH/start_server.py"
 MIN_PYTHON_VERSION="3.10"
 
-# Function to check Python version
+# check Python version
 check_python_version() {
     PYTHON_VERSION=$(python3.13 --version 2>&1)
     if [[ $PYTHON_VERSION =~ Python\ ([0-9]+\.[0-9]+\.[0-9]+) ]]; then
@@ -24,7 +21,7 @@ check_python_version() {
     fi
 }
 
-# Function to create and activate virtual environment
+# activate virtual env
 setup_venv() {
     if [ ! -d "$VENV_PATH" ]; then
         echo "Setting up virtual environment..."
@@ -36,19 +33,16 @@ setup_venv() {
     source "$VENV_PATH/bin/activate"
 }
 
-# Function to install Python packages
 install_requirements() {
     echo "Installing Python packages from requirements.txt..."
     pip install -r "$REQUIREMENTS_FILE"
 }
 
-# Function to start the server
 start_server() {
     echo "Starting the server..."
     python "$SERVER_SCRIPT"
 }
 
-# Main script execution
 echo "Deploying the server..."
 check_python_version
 setup_venv

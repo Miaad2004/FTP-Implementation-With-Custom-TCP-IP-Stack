@@ -2,7 +2,8 @@ import socket
 import logging
 import os
 import ssl
-from typing import Tuple, Optional
+from typing import Optional
+
 
 class FTPClient:
     def __init__(self, host: str, port: int = 21):
@@ -21,7 +22,6 @@ class FTPClient:
             level=logging.INFO,
             format='%(asctime)s - %(levelname)s - %(message)s'
         )
-        
         
     def connect(self) -> bool:
         """Establish control connection to FTP server"""
