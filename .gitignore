@@ -5,3 +5,4 @@ delete_this.py
 /fs_root
 *.crt
 *.key
+*.pem
