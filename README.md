@@ -1,4 +1,4 @@
-# Swift FTP Server With Custom TCP/IP Stack
+# SwiftFile: FTP Server With Custom TCP/IP Stack
 
 A secure FTP server and client implementation in Python featuring a custom TCP/IP stack, built-in file system with SQLite backend, and interactive command-line interfaces.
 
