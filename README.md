@@ -80,7 +80,6 @@ A secure FTP server and client implementation in Python featuring a custom TCP/I
 - `logout` - Logout from system
 - `ls [path]` - List directory contents
 - `cd <path>` - Change directory
-- 
 
 pwd
 
