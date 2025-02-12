@@ -143,3 +143,8 @@ Server settings in server_config.json
     "support_FTPS": true
 }
 ```
+
+## Contributors
+
+- [Miaad2004](https://github.com/Miaad2004)
+- [taha-najaf](https://github.com/taha-najaf)
