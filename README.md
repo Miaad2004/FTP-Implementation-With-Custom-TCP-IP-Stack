@@ -2,6 +2,15 @@
 
 A secure FTP server and client implementation in Python featuring a custom TCP/IP stack, built-in file system with SQLite backend, and interactive command-line interfaces.
 
+<p align="center">
+  <img src="screenshots/sample.gif" />
+</p>
+<p float="left">
+  <img src='screenshots/1.png' width='400'/>
+  <img src='screenshots/2.png' width='400'/>
+</p>
+
+
 ## Features
 
 ### Core Features
