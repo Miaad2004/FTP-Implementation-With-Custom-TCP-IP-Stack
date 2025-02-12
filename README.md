@@ -75,29 +75,24 @@ A secure FTP server and client implementation in Python featuring a custom TCP/I
 
 pwd
 
- - Print working directory
-- 
+ - Print working directory 
 
 mkdir <path>
 
  - Create directory
-- 
 
 rmdir <path>
 
  - Remove directory
-- 
 
 touch <file>
 
  - Create empty file
 - `rm <file>` - Remove file
-- 
 
 chmod <path> <perms>
 
  - Change permissions
-- 
 
 rename <old> <new>
 
@@ -139,11 +134,7 @@ python file_system_cli.py -i
 
 ## Configuration
 
-Server settings in 
-
-server_config.json
-
-:
+Server settings in server_config.json
 ```json
 {
     "ftp_host": "127.0.0.1", 
@@ -152,3 +143,8 @@ server_config.json
     "support_FTPS": true
 }
 ```
+
+## Contributors
+
+- [Miaad2004](https://github.com/Miaad2004)
+- [taha-najaf](https://github.com/taha-najaf)
